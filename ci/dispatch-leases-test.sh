@@ -585,12 +585,28 @@ for _try in $(seq 1 100); do
   [[ "$CHAIN_HEARTBEAT_PGID" == "$CHAIN_HEARTBEAT_PID" ]] && break
   sleep 0.01
 done
-python3 -c 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)' &
+CHAIN_CHILD_FILE="$TMP/kill-wrapper-child.pid"
+python3 -c '
+import os,pathlib,signal,subprocess,sys,time
+os.setsid()
+child = subprocess.Popen([
+    sys.executable, "-c",
+    "import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(30)",
+])
+pathlib.Path(sys.argv[1]).write_text(str(child.pid))
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+time.sleep(30)
+' "$CHAIN_CHILD_FILE" &
 CHAIN_WRAPPER_PID=$!
 python3 -c 'import time; time.sleep(30)' &
 CHAIN_SIBLING_PID=$!
 CHAIN_HEARTBEAT_START="$(ps -o lstart= -p "$CHAIN_HEARTBEAT_PID" | awk '{$1=$1; print; exit}')"
 CHAIN_WRAPPER_START="$(ps -o lstart= -p "$CHAIN_WRAPPER_PID" | awk '{$1=$1; print; exit}')"
+for _try in $(seq 1 100); do
+  [[ -s "$CHAIN_CHILD_FILE" ]] && break
+  sleep 0.01
+done
+CHAIN_CHILD_PID="$(awk 'NR==1 {print; exit}' "$CHAIN_CHILD_FILE")"
 printf 'run_id=orphan-chain\nticket=T-901\npid=99999999\npgid=99999999\nprocess_start=absent\n' \
   > "$CHAIN_ROOT/factory/runs/orphan-chain.meta"
 printf 'pid=99999999\npgid=99999999\nrun_id=orphan-chain\nprocess_start=absent\n' \
@@ -602,8 +618,14 @@ printf 'run_id=orphan-chain\nwrapper_pid=%s\nwrapper_process_start=%s\nheartbeat
 FACTORY_SKIP_SCHEDULE_STOP=1 "$KILL" "$CHAIN_ROOT" > "$TMP/kill-wrapper-chain.out" 2>&1
 wait "$CHAIN_HEARTBEAT_PID" 2>/dev/null || true
 wait "$CHAIN_WRAPPER_PID" 2>/dev/null || true
+for _try in $(seq 1 100); do
+  CHAIN_CHILD_STATE="$(ps -o stat= -p "$CHAIN_CHILD_PID" 2>/dev/null | awk '{$1=$1; print; exit}')"
+  [[ -z "$CHAIN_CHILD_STATE" || "$CHAIN_CHILD_STATE" == Z* ]] && break
+  sleep 0.02
+done
 if [[ ! -e "$CHAIN_ROOT/factory/runs/orphan-chain.wrapper" &&
       ! -e "$CHAIN_ROOT/factory/runs/orphan-chain.pid" ]] &&
+   [[ -z "$CHAIN_CHILD_STATE" || "$CHAIN_CHILD_STATE" == Z* ]] &&
    kill -0 "$CHAIN_SIBLING_PID" 2>/dev/null; then
   pass "kill switch stops only the exact wrapper and heartbeat after provider identity is gone"
 else
@@ -615,6 +637,157 @@ wait "$CHAIN_SIBLING_PID" 2>/dev/null || true
 [[ ! -e "$CHAIN_ROOT/factory/runs/orphan-chain.wrapper" ]] &&
   pass "kill-switch replay keeps the drained wrapper chain absent" ||
   fail "kill-switch replay keeps the drained wrapper chain absent"
+
+DEAD_LEADER_ROOT="$TMP/dead-wrapper-leader"
+mkdir -p "$DEAD_LEADER_ROOT/factory/runs"
+DEAD_CHILD_FILE="$TMP/dead-wrapper-child.pid"
+python3 -c '
+import os,pathlib,signal,subprocess,sys,time
+os.setsid()
+child = subprocess.Popen([
+    sys.executable, "-c",
+    "import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(30)",
+])
+pathlib.Path(sys.argv[1]).write_text(str(child.pid))
+time.sleep(30)
+' "$DEAD_CHILD_FILE" &
+DEAD_LEADER_PID=$!
+for _try in $(seq 1 100); do
+  [[ -s "$DEAD_CHILD_FILE" ]] && break
+  sleep 0.01
+done
+DEAD_CHILD_PID="$(awk 'NR==1 {print; exit}' "$DEAD_CHILD_FILE")"
+DEAD_LEADER_START="$(ps -o lstart= -p "$DEAD_LEADER_PID" | awk '{$1=$1; print; exit}')"
+printf 'run_id=dead-leader\nwrapper_pid=%s\nwrapper_pgid=%s\nwrapper_process_start=%s\nheartbeat_pid=99999999\nheartbeat_pgid=99999999\nheartbeat_process_start=absent\n' \
+  "$DEAD_LEADER_PID" "$DEAD_LEADER_PID" "$DEAD_LEADER_START" \
+  > "$DEAD_LEADER_ROOT/factory/runs/dead-leader.wrapper"
+kill -KILL "$DEAD_LEADER_PID"
+wait "$DEAD_LEADER_PID" 2>/dev/null || true
+FACTORY_SKIP_SCHEDULE_STOP=1 "$KILL" "$DEAD_LEADER_ROOT" \
+  > "$TMP/dead-wrapper-leader.out" 2>&1
+for _try in $(seq 1 100); do
+  DEAD_CHILD_STATE="$(ps -o stat= -p "$DEAD_CHILD_PID" 2>/dev/null | awk '{$1=$1; print; exit}')"
+  [[ -z "$DEAD_CHILD_STATE" || "$DEAD_CHILD_STATE" == Z* ]] && break
+  sleep 0.02
+done
+if [[ -z "$DEAD_CHILD_STATE" || "$DEAD_CHILD_STATE" == Z* ]] &&
+   [[ ! -e "$DEAD_LEADER_ROOT/factory/runs/dead-leader.wrapper" ]]; then
+  pass "kill switch drains a recorded wrapper group after its leader exits"
+else
+  fail "kill switch drains a recorded wrapper group after its leader exits"
+fi
+
+ZOMBIE_ROOT="$TMP/zombie-wrapper-leader"
+mkdir -p "$ZOMBIE_ROOT/factory/runs"
+ZOMBIE_INFO="$TMP/zombie-wrapper.info"
+ZOMBIE_CHILD_FILE="$TMP/zombie-wrapper-child.pid"
+ZOMBIE_STOP="$TMP/zombie-wrapper.stop"
+python3 -c '
+import os,pathlib,subprocess,sys,time
+info, child_file, stop = map(pathlib.Path, sys.argv[1:])
+leader = subprocess.Popen([
+    sys.executable, "-c",
+    "import os,pathlib,signal,subprocess,sys,time; os.setsid(); "
+    "child=subprocess.Popen([sys.executable,\"-c\",\"import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(30)\"]); "
+    "pathlib.Path(sys.argv[1]).write_text(str(child.pid)); time.sleep(30)",
+    str(child_file),
+])
+info.write_text(str(leader.pid))
+while not stop.exists():
+    time.sleep(0.01)
+os.kill(leader.pid, 9)
+time.sleep(30)
+' "$ZOMBIE_INFO" "$ZOMBIE_CHILD_FILE" "$ZOMBIE_STOP" &
+ZOMBIE_SUPERVISOR_PID=$!
+for _try in $(seq 1 100); do
+  [[ -s "$ZOMBIE_INFO" && -s "$ZOMBIE_CHILD_FILE" ]] && break
+  sleep 0.01
+done
+ZOMBIE_LEADER_PID="$(awk 'NR==1 {print; exit}' "$ZOMBIE_INFO")"
+ZOMBIE_CHILD_PID="$(awk 'NR==1 {print; exit}' "$ZOMBIE_CHILD_FILE")"
+ZOMBIE_LEADER_START="$(ps -o lstart= -p "$ZOMBIE_LEADER_PID" | awk '{$1=$1; print; exit}')"
+printf 'run_id=zombie-leader\nwrapper_pid=%s\nwrapper_pgid=%s\nwrapper_process_start=%s\nheartbeat_pid=99999999\nheartbeat_pgid=99999999\nheartbeat_process_start=absent\n' \
+  "$ZOMBIE_LEADER_PID" "$ZOMBIE_LEADER_PID" "$ZOMBIE_LEADER_START" \
+  > "$ZOMBIE_ROOT/factory/runs/zombie-leader.wrapper"
+touch "$ZOMBIE_STOP"
+for _try in $(seq 1 100); do
+  ZOMBIE_LEADER_STATE="$(ps -o stat= -p "$ZOMBIE_LEADER_PID" 2>/dev/null | awk '{$1=$1; print; exit}')"
+  [[ "$ZOMBIE_LEADER_STATE" == Z* ]] && break
+  sleep 0.01
+done
+FACTORY_SKIP_SCHEDULE_STOP=1 "$KILL" "$ZOMBIE_ROOT" \
+  > "$TMP/zombie-wrapper-leader.out" 2>&1
+for _try in $(seq 1 100); do
+  ZOMBIE_CHILD_STATE="$(ps -o stat= -p "$ZOMBIE_CHILD_PID" 2>/dev/null | awk '{$1=$1; print; exit}')"
+  [[ -z "$ZOMBIE_CHILD_STATE" || "$ZOMBIE_CHILD_STATE" == Z* ]] && break
+  sleep 0.02
+done
+if [[ "$ZOMBIE_LEADER_STATE" == Z* ]] &&
+   [[ -z "$ZOMBIE_CHILD_STATE" || "$ZOMBIE_CHILD_STATE" == Z* ]] &&
+   [[ ! -e "$ZOMBIE_ROOT/factory/runs/zombie-leader.wrapper" ]]; then
+  pass "kill switch drains a recorded wrapper group whose leader is a zombie"
+else
+  fail "kill switch drains a recorded wrapper group whose leader is a zombie"
+fi
+kill -TERM "$ZOMBIE_SUPERVISOR_PID" 2>/dev/null || true
+wait "$ZOMBIE_SUPERVISOR_PID" 2>/dev/null || true
+
+LEGACY_DEAD_ROOT="$TMP/legacy-dead-wrapper-leader"
+mkdir -p "$LEGACY_DEAD_ROOT/factory/runs"
+LEGACY_CHILD_FILE="$TMP/legacy-dead-wrapper-child.pid"
+python3 -c '
+import os,pathlib,subprocess,sys,time
+os.setsid()
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+pathlib.Path(sys.argv[1]).write_text(str(child.pid))
+time.sleep(30)
+' "$LEGACY_CHILD_FILE" &
+LEGACY_LEADER_PID=$!
+for _try in $(seq 1 100); do
+  [[ -s "$LEGACY_CHILD_FILE" ]] && break
+  sleep 0.01
+done
+LEGACY_CHILD_PID="$(awk 'NR==1 {print; exit}' "$LEGACY_CHILD_FILE")"
+LEGACY_LEADER_START="$(ps -o lstart= -p "$LEGACY_LEADER_PID" | awk '{$1=$1; print; exit}')"
+printf 'run_id=legacy-dead\nwrapper_pid=%s\nwrapper_process_start=%s\nheartbeat_pid=99999999\nheartbeat_pgid=99999999\nheartbeat_process_start=absent\n' \
+  "$LEGACY_LEADER_PID" "$LEGACY_LEADER_START" \
+  > "$LEGACY_DEAD_ROOT/factory/runs/legacy-dead.wrapper"
+kill -KILL "$LEGACY_LEADER_PID"
+wait "$LEGACY_LEADER_PID" 2>/dev/null || true
+FACTORY_SKIP_SCHEDULE_STOP=1 "$KILL" "$LEGACY_DEAD_ROOT" \
+  > "$TMP/legacy-dead-wrapper-leader.out" 2>&1
+if kill -0 "$LEGACY_CHILD_PID" 2>/dev/null &&
+   [[ -e "$LEGACY_DEAD_ROOT/factory/runs/legacy-dead.wrapper" ]] &&
+   grep -q "leader is absent while its group remains live" \
+     "$TMP/legacy-dead-wrapper-leader.out"; then
+  pass "kill switch retains legacy evidence when a dead leader group is ambiguous"
+else
+  fail "kill switch retains legacy evidence when a dead leader group is ambiguous"
+fi
+kill -KILL -- "-$LEGACY_LEADER_PID" 2>/dev/null || true
+
+SHARED_GROUP_ROOT="$TMP/shared-wrapper-group"
+mkdir -p "$SHARED_GROUP_ROOT/factory/runs"
+python3 -c 'import time; time.sleep(30)' &
+SHARED_WRAPPER_PID=$!
+python3 -c 'import time; time.sleep(30)' &
+SHARED_SIBLING_PID=$!
+SHARED_WRAPPER_START="$(ps -o lstart= -p "$SHARED_WRAPPER_PID" | awk '{$1=$1; print; exit}')"
+printf 'run_id=shared-wrapper\nwrapper_pid=%s\nwrapper_process_start=%s\nheartbeat_pid=99999999\nheartbeat_pgid=99999999\nheartbeat_process_start=absent\n' \
+  "$SHARED_WRAPPER_PID" "$SHARED_WRAPPER_START" \
+  > "$SHARED_GROUP_ROOT/factory/runs/shared-wrapper.wrapper"
+FACTORY_SKIP_SCHEDULE_STOP=1 "$KILL" "$SHARED_GROUP_ROOT" \
+  > "$TMP/shared-wrapper-group.out" 2>&1
+wait "$SHARED_WRAPPER_PID" 2>/dev/null || true
+if ! kill -0 "$SHARED_WRAPPER_PID" 2>/dev/null &&
+   kill -0 "$SHARED_SIBLING_PID" 2>/dev/null &&
+   [[ ! -e "$SHARED_GROUP_ROOT/factory/runs/shared-wrapper.wrapper" ]]; then
+  pass "kill switch keeps unrelated members of a shared caller group"
+else
+  fail "kill switch keeps unrelated members of a shared caller group"
+fi
+kill -TERM "$SHARED_SIBLING_PID" 2>/dev/null || true
+wait "$SHARED_SIBLING_PID" 2>/dev/null || true
 
 STALE_WRAPPER_ROOT="$TMP/stale-wrapper"
 mkdir -p "$STALE_WRAPPER_ROOT/factory/runs"

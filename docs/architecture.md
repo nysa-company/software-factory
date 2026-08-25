@@ -62,6 +62,20 @@ any concurrent manifest, claim, lock, ledger, or checkout mutation still fails.
 Cancellation previews are deterministic over the exact manifest, PID record,
 and reason so separate plan and apply launcher invocations agree; any mutation
 to that snapshot changes the preview hash and refuses the apply.
+Native controllers start each role wrapper in its own session, so one-shot or
+service-manager cleanup of the controller cannot kill accepted work. The kill
+switch drains the wrapper's complete process group only when the controller
+identity proves `PID == PGID`; direct launcher callers that share a host group
+retain PID-only wrapper shutdown.
+Successor qualification recovery additionally binds a dead controller wrapper,
+its exact heartbeat, immutable dispatch-lease identity, provider submission,
+submission sidecar, active-run claim, and provider CLI runtime inode. It stops
+only those bound processes and quarantines only the bound claim and runtime
+before deletion. The durable request makes interruptions after heartbeat,
+lease, accounting, manifest, or either quarantine converge under the existing
+qualification controller and admission locks. Provider submission time comes
+from the coordinator; the independently scheduled sidecar timestamp is evidence
+only and has no cross-clock ordering.
 
 Before creating a manifest, every run acquires a product-level control lock and
 holds it through provider exit and integrity verification. This temporarily
@@ -2271,6 +2285,10 @@ Maintenance blocks claims and new role submission while exact authenticated
 owners may renew and release solely to drain; activation and rollback refuse
 until every lease drains. The kill switch clears only validated safe lease
 state after stopping recorded runs.
+An initialized provider coordinator serves `status` through a validated SQLite
+read-only connection. Supported first use may initialize the database, but later
+status and Doctor inspection take no writer transaction and do not change its
+bytes.
 Renewal serializes only on the dispatcher lease lock, not the provider launch
 lock; matching ownership and pre/post mutation KILL checks remain fail-closed
 while unrelated provider entry cannot starve a heartbeat. Each heartbeat owns

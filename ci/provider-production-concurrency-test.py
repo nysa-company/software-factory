@@ -1352,6 +1352,29 @@ esac
         self.assertTrue(provider["concurrency_required"])
         self.assertTrue(provider["concurrency_ready"])
 
+        runs = product / "factory/runs"
+        runs.mkdir()
+        (runs / "stale-1.pid").write_text("pid=99999999\n")
+        (runs / "stale-1.meta").write_text("ticket=T-1\n")
+        stale = subprocess.run(
+            arguments,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=environment,
+            timeout=30,
+        )
+        self.assertEqual(
+            json.loads(stale.stdout)["checks"]["runtime"]["runs"],
+            [{
+                "recovery_command": None,
+                "recovery_reason": "unsupported_stale_run",
+                "run_id": "stale-1",
+                "state": "stale",
+                "ticket": "T-1",
+            }],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

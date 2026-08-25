@@ -29,20 +29,29 @@ process_start_identity() {
   ps -o lstart= -p "$1" 2>/dev/null | awk '{$1=$1; print; exit}'
 }
 
+process_group_alive() {
+  ps -axo pgid=,stat= 2>/dev/null | awk -v expected="$1" '
+    $1 == expected && $2 !~ /^Z/ { found=1 }
+    END { exit(found ? 0 : 1) }
+  '
+}
+
 terminate_exact_process() {
   local pid="$1" expected_start="$2" expected_pgid="$3" label="$4"
   local current_start current_pgid state target
   [[ "$pid" =~ ^[1-9][0-9]*$ && -n "$expected_start" ]] || return 1
   current_start="$(process_start_identity "$pid")"
-  [[ -n "$current_start" ]] || return 0
-  state="$(ps -o stat= -p "$pid" 2>/dev/null | awk '{$1=$1; print; exit}')"
-  [[ "$state" != Z* ]] || return 0
-  current_pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | awk '{$1=$1; print; exit}')"
-  if [[ "$current_start" != "$expected_start" ||
-        ( -n "$expected_pgid" && ( "$expected_pgid" != "$pid" ||
-          "$current_pgid" != "$expected_pgid" ) ) ]]; then
-    echo "WARNING: refusing stale or mismatched $label identity: pid=$pid" >&2
-    return 1
+  if [[ -n "$current_start" ]]; then
+    state="$(ps -o stat= -p "$pid" 2>/dev/null | awk '{$1=$1; print; exit}')"
+    current_pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | awk '{$1=$1; print; exit}')"
+    if [[ "$current_start" != "$expected_start" ||
+          ( -n "$expected_pgid" && ( "$expected_pgid" != "$pid" ||
+            "$current_pgid" != "$expected_pgid" ) ) ]]; then
+      echo "WARNING: refusing stale or mismatched $label identity: pid=$pid" >&2
+      return 1
+    fi
+  elif [[ -z "$expected_pgid" ]] || ! process_group_alive "$expected_pgid"; then
+    return 0
   fi
   target="$pid"
   [[ -z "$expected_pgid" ]] || target="-$expected_pgid"
@@ -50,12 +59,16 @@ terminate_exact_process() {
   for _stop_try in $(seq 1 100); do
     current_start="$(process_start_identity "$pid")"
     state="$(ps -o stat= -p "$pid" 2>/dev/null | awk '{$1=$1; print; exit}')"
-    [[ -z "$current_start" || "$state" == Z* ]] && return 0
+    if [[ -n "$expected_pgid" ]]; then
+      process_group_alive "$expected_pgid" || return 0
+    else
+      [[ -z "$current_start" || "$state" == Z* ]] && return 0
+    fi
     sleep 0.02
   done
   current_pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | awk '{$1=$1; print; exit}')"
-  if [[ "$current_start" != "$expected_start" ||
-        ( -n "$expected_pgid" && "$current_pgid" != "$expected_pgid" ) ]]; then
+  if [[ -n "$current_start" && ( "$current_start" != "$expected_start" ||
+        ( -n "$expected_pgid" && "$current_pgid" != "$expected_pgid" ) ) ]]; then
     echo "WARNING: refusing changed $label identity before escalation: pid=$pid" >&2
     return 1
   fi
@@ -63,7 +76,11 @@ terminate_exact_process() {
   for _stop_try in $(seq 1 100); do
     current_start="$(process_start_identity "$pid")"
     state="$(ps -o stat= -p "$pid" 2>/dev/null | awk '{$1=$1; print; exit}')"
-    [[ -z "$current_start" || "$state" == Z* ]] && return 0
+    if [[ -n "$expected_pgid" ]]; then
+      process_group_alive "$expected_pgid" || return 0
+    else
+      [[ -z "$current_start" || "$state" == Z* ]] && return 0
+    fi
     sleep 0.02
   done
   echo "WARNING: exact $label survived bounded shutdown: pid=$pid" >&2
@@ -135,10 +152,13 @@ fi
 if [[ -d "$RUNS_DIR" ]]; then
   for wrapper_file in "$RUNS_DIR"/*.wrapper; do
     [[ -e "$wrapper_file" ]] || continue
+    WRAPPER_LINES="$(wc -l < "$wrapper_file" | tr -d ' ')"
     if [[ ! -f "$wrapper_file" || -L "$wrapper_file" ||
-          "$(wc -l < "$wrapper_file" | tr -d ' ')" -ne 6 ]] ||
+          ( "$WRAPPER_LINES" -ne 6 && "$WRAPPER_LINES" -ne 7 ) ]] ||
        ! grep -Eq '^run_id=[A-Za-z0-9._-]{1,200}$' "$wrapper_file" ||
        ! grep -Eq '^wrapper_pid=[1-9][0-9]*$' "$wrapper_file" ||
+       { [[ "$WRAPPER_LINES" -eq 7 ]] &&
+         ! grep -Eq '^wrapper_pgid=[1-9][0-9]*$' "$wrapper_file"; } ||
        ! grep -Eq '^wrapper_process_start=.+$' "$wrapper_file" ||
        ! grep -Eq '^heartbeat_pid=[1-9][0-9]*$' "$wrapper_file" ||
        ! grep -Eq '^heartbeat_pgid=[1-9][0-9]*$' "$wrapper_file" ||
@@ -148,10 +168,24 @@ if [[ -d "$RUNS_DIR" ]]; then
     fi
     WRAPPER_RUN_ID="$(sed -n 's/^run_id=//p' "$wrapper_file" | awk 'NR==1 {print; exit}')"
     WRAPPER_PID="$(sed -n 's/^wrapper_pid=//p' "$wrapper_file" | awk 'NR==1 {print; exit}')"
+    WRAPPER_RECORDED_PGID="$(sed -n 's/^wrapper_pgid=//p' "$wrapper_file" | awk 'NR==1 {print; exit}')"
     WRAPPER_PROCESS_START="$(sed -n 's/^wrapper_process_start=//p' "$wrapper_file" | awk 'NR==1 {print; exit}')"
     HEARTBEAT_PID="$(sed -n 's/^heartbeat_pid=//p' "$wrapper_file" | awk 'NR==1 {print; exit}')"
     HEARTBEAT_PGID="$(sed -n 's/^heartbeat_pgid=//p' "$wrapper_file" | awk 'NR==1 {print; exit}')"
     HEARTBEAT_PROCESS_START="$(sed -n 's/^heartbeat_process_start=//p' "$wrapper_file" | awk 'NR==1 {print; exit}')"
+    WRAPPER_CURRENT_START="$(process_start_identity "$WRAPPER_PID")"
+    WRAPPER_PGID="$(ps -o pgid= -p "$WRAPPER_PID" 2>/dev/null | awk '{$1=$1; print; exit}')"
+    WRAPPER_EXPECTED_PGID=""
+    if [[ -n "$WRAPPER_RECORDED_PGID" ]]; then
+      [[ "$WRAPPER_RECORDED_PGID" != "$WRAPPER_PID" ]] ||
+        WRAPPER_EXPECTED_PGID="$WRAPPER_PID"
+    elif [[ "$WRAPPER_CURRENT_START" == "$WRAPPER_PROCESS_START" &&
+            "$WRAPPER_PGID" == "$WRAPPER_PID" ]]; then
+      WRAPPER_EXPECTED_PGID="$WRAPPER_PID"
+    elif [[ -z "$WRAPPER_CURRENT_START" ]] && process_group_alive "$WRAPPER_PID"; then
+      echo "WARNING: run wrapper leader is absent while its group remains live: pid=$WRAPPER_PID" >&2
+      continue
+    fi
     if [[ "$WRAPPER_RUN_ID" != "$(basename "$wrapper_file" .wrapper)" ]]; then
       echo "WARNING: malformed factory wrapper record retained: $wrapper_file" >&2
       continue
@@ -161,7 +195,8 @@ if [[ -d "$RUNS_DIR" ]]; then
       echo "WARNING: dispatcher heartbeat retained for operator reconciliation: $wrapper_file" >&2
       continue
     fi
-    if terminate_exact_process "$WRAPPER_PID" "$WRAPPER_PROCESS_START" "" \
+    if terminate_exact_process "$WRAPPER_PID" "$WRAPPER_PROCESS_START" \
+        "$WRAPPER_EXPECTED_PGID" \
         "run wrapper"; then
       rm -f "$wrapper_file" "$RUNS_DIR/$WRAPPER_RUN_ID.pid"
     else

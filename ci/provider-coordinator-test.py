@@ -649,6 +649,50 @@ class ProviderCoordinatorTest(unittest.TestCase):
         )
         self.assertEqual(rejected["status"], "error")
 
+    def test_status_is_read_only_after_first_use(self):
+        self.reserve("secure")
+        before = self.db.read_bytes()
+        writer = sqlite3.connect(self.db)
+        writer.execute("BEGIN IMMEDIATE")
+        self.assertEqual(
+            self.json_command("status", "--attempt-id", "secure")["counts"],
+            {"reserved": 1},
+        )
+        writer.rollback()
+        writer.close()
+        self.assertEqual(self.db.read_bytes(), before)
+
+        unusual = self.root / "state?#.sqlite3"
+        shutil.copy2(self.db, unusual)
+        self.assertEqual(
+            self.json_command("status", "--attempt-id", "secure", db=unusual)[
+                "counts"
+            ],
+            {"reserved": 1},
+        )
+
+        relative = subprocess.run(
+            [
+                sys.executable, str(COORDINATOR), "--db", self.db.name,
+                "status",
+            ],
+            cwd=self.root, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(relative.returncode, 2)
+        self.assertIn("absolute", relative.stdout)
+
+        with sqlite3.connect(self.db) as connection:
+            connection.execute(
+                "UPDATE metadata SET value='wrong' WHERE key='schema'"
+            )
+        wrong = self.command("status", check=False)
+        self.assertEqual(wrong.returncode, 2)
+        self.assertIn("unsupported", wrong.stdout)
+
+        missing = self.root / "missing.sqlite3"
+        self.assertEqual(self.json_command("status", db=missing)["attempts"], [])
+        self.assertTrue(missing.exists())
+
     def test_cursor_account_admission_is_shared_by_route_not_lane(self):
         self.write_policy(account_concurrent=1)
         lane_two = self.root / "lane-two.sqlite3"

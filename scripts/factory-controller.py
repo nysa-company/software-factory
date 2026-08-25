@@ -13071,7 +13071,9 @@ class Controller:
                     "attempt_started", claim["ticket"], role=role,
                     transition_receipt_sha256=receipt,
                 )
-                process = subprocess.Popen(command, stdout=log, stderr=log)
+                process = subprocess.Popen(
+                    command, stdout=log, stderr=log, start_new_session=True,
+                )
             while True:
                 if (
                     self.qualification

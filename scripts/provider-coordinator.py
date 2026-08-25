@@ -373,6 +373,47 @@ def database(path):
         secure_regular(path, "database", owner_only=True)
 
 
+def database_identity(path, connection=None):
+    info = secure_regular(path, "database", owner_only=True)
+    if connection is not None:
+        stored = connection.execute(
+            "SELECT value FROM metadata WHERE key='schema'"
+        ).fetchone()
+        if (
+            connection.execute("PRAGMA application_id").fetchone()[0]
+            != APPLICATION_ID
+            or connection.execute("PRAGMA user_version").fetchone()[0] != 2
+            or stored is None
+            or stored[0] != SCHEMA
+        ):
+            raise CoordinatorError("database identity or version is unsupported")
+    return (
+        info.st_dev, info.st_ino, info.st_nlink,
+        stat.S_IMODE(info.st_mode), info.st_uid,
+    )
+
+
+@contextmanager
+def existing_database(path):
+    secure_directory(path.parent)
+    identity = database_identity(path)
+    connection = sqlite3.connect(
+        f"{path.as_uri()}?mode=ro", uri=True, timeout=10, isolation_level=None,
+    )
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA trusted_schema=OFF")
+        connection.execute("PRAGMA query_only=ON")
+        if database_identity(path, connection) != identity:
+            raise CoordinatorError("database changed while opening")
+        yield connection
+    finally:
+        connection.close()
+        if database_identity(path) != identity:
+            raise CoordinatorError("database changed while open")
+
+
 ACCOUNT_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS metadata (
   key TEXT PRIMARY KEY,
@@ -2251,6 +2292,8 @@ def main():
                         "account admission database is required"
                     )
                 selected_database = account_database(Path(args.account_db))
+            elif args.command == "status" and Path(args.db).exists():
+                selected_database = existing_database(Path(args.db))
             else:
                 selected_database = database(Path(args.db))
             with selected_database as connection:
