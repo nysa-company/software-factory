@@ -31,8 +31,23 @@ SPEC.loader.exec_module(IDENTITY)
 
 REASONS = frozenset(("budget_exhausted", "operator_requested"))
 PLAN_SCHEMA = "nysa.software-factory.attempt-cancel-plan/v1"
+PROVIDER_ONLY_PLAN_SCHEMA = (
+    "nysa.software-factory.provider-only-attempt-cancel-plan/v1"
+)
 REQUEST_SCHEMA = "nysa.software-factory.attempt-cancel-request/v1"
 RECEIPT_SCHEMA = "nysa.software-factory.attempt-cancellation/v1"
+PROVIDER_ONLY_RECEIPT_SCHEMA = (
+    "nysa.software-factory.provider-only-attempt-cancellation/v1"
+)
+PROVIDER_ATTEMPT_FIELDS = frozenset((
+    "account_route", "admitted_at", "attempt_id", "budget_day",
+    "cancellation_reason", "cancellation_requested_at", "charge_micro_usd",
+    "go_at", "machine_daily_cap_micro_usd", "policy_sha256", "prepared_at",
+    "product_daily_cap_micro_usd", "product_id", "provider_family",
+    "reserve_micro_usd", "state", "submitted_at", "terminal_at",
+    "terminal_result", "ticket_cap_micro_usd", "ticket_id", "updated_at",
+    "version",
+))
 TERMINAL_STATES = frozenset((
     "completed", "abandoned_conservative", "launch_void",
     "cancelled_conservative",
@@ -209,6 +224,13 @@ def calculate(
     if reason not in REASONS:
         raise CancelError("cancellation reason is not eligible")
     attempt = paths(factory_root, run_id)
+    if not any(
+        path.exists() or path.is_symlink()
+        for path in (attempt["manifest"], attempt["pid"])
+    ):
+        return calculate_provider_only(
+            factory_root, ticket, run_id, reason, nonce,
+        )
     identity, _ = load_active_or_stale_identity(attempt["runs"], run_id, ticket)
     manifest_raw = IDENTITY.record_bytes(attempt["manifest"])
     manifest = IDENTITY.parse_fields(manifest_raw, "run manifest")
@@ -241,6 +263,9 @@ def calculate(
 
 
 def validate_plan(value: dict, expected_hash: str) -> None:
+    if value.get("schema") == PROVIDER_ONLY_PLAN_SCHEMA:
+        validate_provider_only_plan(value, expected_hash)
+        return
     if set(value) != {
         "created_at", "go_issued", "manifest_sha256", "nonce", "pgid", "pid",
         "pid_record_sha256", "preview_hash", "process_start", "reason", "run_id",
@@ -584,6 +609,389 @@ def provider_database(factory_root: Path) -> Path:
     return database
 
 
+def provider_account_lease(factory_root: Path, lease_id: str) -> dict | None:
+    configured = os.environ.get("FACTORY_CURSOR_ACCOUNT_DB", "")
+    database = (
+        Path(configured) if configured
+        else provider_database(factory_root).with_name("cursor-account.sqlite3")
+    )
+    if not database.is_absolute():
+        raise CancelError("provider account database path is not absolute")
+    if not database.exists() and not database.is_symlink():
+        return None
+    try:
+        info = database.lstat()
+        if (
+            database.is_symlink()
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_nlink != 1
+            or info.st_mode & 0o022
+        ):
+            raise CancelError("provider account database is unsafe")
+        result = subprocess.run(
+            [
+                sys.executable, str(ROOT / "scripts/provider-coordinator.py"),
+                "--db", str(provider_database(factory_root)),
+                "--account-db", str(database), "account-status",
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        value = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+        raise CancelError("provider account lease lookup failed") from error
+    leases = value.get("leases") if isinstance(value, dict) else None
+    if not isinstance(leases, list) or any(not isinstance(item, dict) for item in leases):
+        raise CancelError("provider account lease lookup failed")
+    selected = [item for item in leases if item.get("lease_id") == lease_id]
+    if len(selected) > 1:
+        raise CancelError("provider account lease lookup failed")
+    return selected[0] if selected else None
+
+
+def provider_attempt(factory_root: Path, attempt_id: str) -> dict:
+    try:
+        result = subprocess.run(
+            [
+                sys.executable, str(ROOT / "scripts/provider-coordinator.py"),
+                "--db", str(provider_database(factory_root)),
+                "status", "--attempt-id", attempt_id,
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        value = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+        raise CancelError("provider attempt lookup failed") from error
+    attempts = value.get("attempts") if isinstance(value, dict) else None
+    if not isinstance(attempts, list) or len(attempts) != 1:
+        raise CancelError("provider attempt lookup failed")
+    return attempts[0]
+
+
+def provider_only_product_id() -> str:
+    project = os.environ.get("FACTORY_PROJECT", "")
+    release = os.environ.get("FACTORY_RELEASE_SHA", "")
+    product = os.environ.get("FACTORY_PROVIDER_PRODUCT_ID", "")
+    if (
+        re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", project)
+        and re.fullmatch(r"[0-9a-f]{40}", release)
+        and product == f"{project}:{release}"
+    ):
+        return product
+    source = os.environ.get("FACTORY_CROSS_RELEASE_SOURCE_SHA", "")
+    product = os.environ.get("FACTORY_CROSS_RELEASE_PRODUCT_ID", "")
+    if (
+        re.fullmatch(r"[0-9a-f]{40}", source)
+        and re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", product)
+        and product.endswith(f":{source}")
+    ):
+        return product
+    raise CancelError(
+        "provider-only cancellation requires sealed qualification identity"
+    )
+
+
+def validate_provider_only_initial(
+    value: dict, ticket: str, run_id: str,
+) -> None:
+    product = provider_only_product_id()
+    integers = (
+        "machine_daily_cap_micro_usd", "prepared_at",
+        "product_daily_cap_micro_usd", "reserve_micro_usd",
+        "ticket_cap_micro_usd", "updated_at", "version",
+    )
+    if (
+        set(value) != PROVIDER_ATTEMPT_FIELDS
+        or not re.fullmatch(r"[0-9]{9,}-[1-9][0-9]*-cli", run_id)
+        or value.get("attempt_id") != run_id
+        or value.get("ticket_id") != ticket
+        or value.get("product_id") != product
+        or value.get("state") not in {"prepared", "reserved"}
+        or value.get("version") != (
+            1 if value.get("state") == "prepared" else 2
+        )
+        or any(
+            not isinstance(value.get(name), int)
+            or isinstance(value.get(name), bool)
+            or value[name] < 0
+            for name in integers
+        )
+        or value.get("reserve_micro_usd", 0) <= 0
+        or any(
+            value.get(name, -1) < value.get("reserve_micro_usd", 0)
+            for name in (
+                "machine_daily_cap_micro_usd",
+                "product_daily_cap_micro_usd", "ticket_cap_micro_usd",
+            )
+        )
+        or not re.fullmatch(r"[A-Za-z0-9._:@-]{1,200}", value.get("provider_family", ""))
+        or not re.fullmatch(r"[A-Za-z0-9._:@-]{1,200}", value.get("account_route", ""))
+        or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value.get("budget_day", ""))
+        or value.get("go_at") is not None
+        or value.get("submitted_at") is not None
+        or value.get("terminal_at") is not None
+        or value.get("terminal_result") is not None
+        or value.get("charge_micro_usd") is not None
+        or value.get("cancellation_requested_at") is not None
+        or value.get("cancellation_reason") is not None
+        or (
+            value.get("state") == "prepared"
+            and (
+                value.get("admitted_at") is not None
+                or value.get("policy_sha256") is not None
+                or value.get("updated_at") != value.get("prepared_at")
+            )
+        )
+        or (
+            value.get("state") == "reserved"
+            and (
+                not isinstance(value.get("admitted_at"), int)
+                or isinstance(value.get("admitted_at"), bool)
+                or value.get("admitted_at") < value.get("prepared_at")
+                or value.get("updated_at") != value.get("admitted_at")
+                or not re.fullmatch(r"[0-9a-f]{64}", value.get("policy_sha256", ""))
+            )
+        )
+    ):
+        raise CancelError("provider-only attempt is not an exact pre-GO orphan")
+
+
+def provider_only_records_absent(
+    factory_root: Path, ticket: str, run_id: str,
+) -> None:
+    attempt = paths(factory_root, run_id)
+    match = re.fullmatch(r"([0-9]{9,})-([1-9][0-9]*)-cli", run_id)
+    if match is None:
+        raise CancelError("provider-only attempt identity is invalid")
+    base_run = run_id[:-4]
+    records = [
+        attempt["runs"] / f"{selected}.{suffix}"
+        for selected in (base_run, run_id)
+        for suffix in ("meta", "pid", "out", "progress.jsonl", "wrapper")
+    ] + [
+        attempt["runs"] / f".{selected}.{suffix}"
+        for selected in (base_run, run_id)
+        for suffix in ("ready", "go", "gate", "submitted")
+    ]
+    if any(path.exists() or path.is_symlink() for path in records):
+        raise CancelError("provider-only attempt has run evidence")
+    if provider_account_lease(factory_root, f"{run_id}-account") is not None:
+        raise CancelError("provider-only attempt still has an account lease")
+    validate_ledger_projection(factory_root, attempt)
+    with attempt["ledger"].open(newline="", encoding="utf-8") as handle:
+        if any(
+            row.get("run_id") in {run_id, base_run}
+            for row in csv.DictReader(handle)
+        ):
+            raise CancelError("provider-only attempt has runtime ledger evidence")
+    active_runs = attempt["active_runs"]
+    if active_runs.exists() or active_runs.is_symlink():
+        info = active_runs.lstat()
+        if (
+            active_runs.is_symlink()
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_mode & 0o022
+        ):
+            raise CancelError("active-run state is unsafe")
+        if any(active_runs.glob(f"{ticket}.*.lock")):
+            raise CancelError("provider-only attempt still has an active run claim")
+    wrapper_pid = int(match.group(2))
+    table = IDENTITY.process_table()
+    if wrapper_pid in table or any(
+        process.pgid == wrapper_pid for process in table.values()
+    ):
+        raise CancelError("provider-only attempt wrapper is still live")
+    runtime_root = os.environ.get("FACTORY_CLI_RUNTIME_ROOT", "")
+    if runtime_root:
+        root = Path(runtime_root)
+        if not root.is_absolute():
+            raise CancelError("provider CLI runtime root is invalid")
+        for candidate in (root / "attempts" / run_id, root / "c" / run_id):
+            if candidate.exists() or candidate.is_symlink():
+                raise CancelError("provider-only attempt has worker runtime evidence")
+    worker_root = os.environ.get("FACTORY_PROVIDER_ATTEMPT_ROOT", "")
+    if worker_root:
+        root = Path(worker_root)
+        if not root.is_absolute():
+            raise CancelError("provider worker root is invalid")
+        candidate = root / run_id
+        if candidate.exists() or candidate.is_symlink():
+            raise CancelError("provider-only attempt has worker evidence")
+
+
+def validate_provider_only_terminal(value: dict, plan: dict) -> None:
+    initial = plan["provider_attempt"]
+    expected = dict(initial)
+    terminal_at = value.get("terminal_at")
+    expected.update({
+        "charge_micro_usd": 0,
+        "state": "terminal",
+        "terminal_at": terminal_at,
+        "terminal_result": "failed_pre_go",
+        "updated_at": terminal_at,
+        "version": initial["version"] + 1,
+    })
+    if (
+        not isinstance(terminal_at, int)
+        or isinstance(terminal_at, bool)
+        or terminal_at < initial["updated_at"]
+        or value != expected
+    ):
+        raise CancelError("provider-only attempt terminal state does not match")
+
+
+def validate_provider_only_plan(value: dict, expected_hash: str) -> None:
+    if set(value) != {
+        "created_at", "nonce", "preview_hash", "provider_attempt",
+        "provider_attempt_sha256", "reason", "run_id", "schema", "ticket",
+    }:
+        raise CancelError("cancel plan has unexpected fields")
+    supplied = value.get("preview_hash", "")
+    unhashed = dict(value)
+    unhashed.pop("preview_hash", None)
+    attempt = value.get("provider_attempt")
+    if (
+        value.get("schema") != PROVIDER_ONLY_PLAN_SCHEMA
+        or value.get("reason") not in REASONS
+        or not isinstance(attempt, dict)
+        or not re.fullmatch(r"[0-9a-f]{32}", value.get("nonce", ""))
+        or not re.fullmatch(r"[0-9a-f]{64}", value.get("provider_attempt_sha256", ""))
+        or value.get("provider_attempt_sha256") != digest(canonical(attempt))
+        or attempt.get("attempt_id") != value.get("run_id")
+        or attempt.get("ticket_id") != value.get("ticket")
+        or not re.fullmatch(r"[0-9a-f]{64}", supplied)
+        or supplied != digest(canonical(unhashed))
+        or supplied != expected_hash
+    ):
+        raise CancelError("cancel preview hash does not match the plan")
+    validate_provider_only_initial(attempt, value["ticket"], value["run_id"])
+
+
+def provider_only_receipt_replay(path: Path, plan: dict) -> dict | None:
+    try:
+        value, _ = secure_json(path)
+    except FileNotFoundError:
+        return None
+    if (
+        set(value) != {
+            "accounting_state", "charged_usd", "preview_hash",
+            "provider_attempt_sha256", "reason", "run_id", "schema",
+            "terminal_at", "ticket",
+        }
+        or value.get("schema") != PROVIDER_ONLY_RECEIPT_SCHEMA
+        or value.get("accounting_state") != "failed_pre_go"
+        or value.get("charged_usd") != "0"
+        or value.get("preview_hash") != plan["preview_hash"]
+        or value.get("reason") != plan["reason"]
+        or value.get("run_id") != plan["run_id"]
+        or value.get("ticket") != plan["ticket"]
+        or not re.fullmatch(r"[0-9a-f]{64}", value.get("provider_attempt_sha256", ""))
+    ):
+        raise CancelError("existing cancellation receipt belongs to another request")
+    return value
+
+
+def calculate_provider_only(
+    factory_root: Path, ticket: str, run_id: str, reason: str,
+    nonce: str | None,
+) -> dict:
+    provider_only_records_absent(factory_root, ticket, run_id)
+    attempt_paths = paths(factory_root, run_id)
+    status = provider_attempt(factory_root, run_id)
+    if attempt_paths["request"].exists() or attempt_paths["request"].is_symlink():
+        request = read_request(factory_root, ticket, run_id)
+        plan = request["plan"]
+        if plan.get("schema") != PROVIDER_ONLY_PLAN_SCHEMA or plan["reason"] != reason:
+            raise CancelError("existing cancellation request belongs to another plan")
+        initial = plan["provider_attempt"]
+        if status != initial:
+            validate_provider_only_terminal(status, plan)
+        replay = provider_only_receipt_replay(attempt_paths["receipt"], plan)
+        if replay is not None and replay["provider_attempt_sha256"] != digest(canonical(status)):
+            raise CancelError("existing cancellation receipt disagrees with the attempt")
+        return plan
+    validate_provider_only_initial(status, ticket, run_id)
+    raw = canonical(status)
+    nonce = nonce or digest(raw + b"\0" + reason.encode())[:32]
+    created_at = dt.datetime.fromtimestamp(
+        status["updated_at"], dt.timezone.utc,
+    ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    plan = {
+        "created_at": created_at,
+        "nonce": nonce,
+        "provider_attempt": status,
+        "provider_attempt_sha256": digest(raw),
+        "reason": reason,
+        "run_id": run_id,
+        "schema": PROVIDER_ONLY_PLAN_SCHEMA,
+        "ticket": ticket,
+    }
+    plan["preview_hash"] = digest(canonical(plan))
+    return plan
+
+
+def apply_provider_only_plan(factory_root: Path, plan: dict) -> dict:
+    validate_provider_only_plan(plan, plan["preview_hash"])
+    ticket, run_id = plan["ticket"], plan["run_id"]
+    provider_only_records_absent(factory_root, ticket, run_id)
+    attempt_paths = paths(factory_root, run_id)
+    request = {"plan": plan, "requested_at": timestamp(), "schema": REQUEST_SCHEMA}
+    try:
+        durable_create(attempt_paths["request"], canonical(request))
+    except FileExistsError:
+        existing, _ = secure_json(attempt_paths["request"])
+        if existing.get("schema") != REQUEST_SCHEMA or existing.get("plan") != plan:
+            raise CancelError("another cancellation request won the CAS")
+    provider_only_records_absent(factory_root, ticket, run_id)
+    status = provider_attempt(factory_root, run_id)
+    if status == plan["provider_attempt"]:
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable, str(ROOT / "scripts/provider-coordinator.py"),
+                    "--db", str(provider_database(factory_root)), "terminalize",
+                    "--operation-id", f"provider-only-cancel-{plan['preview_hash'][:24]}",
+                    "--attempt-id", run_id,
+                    "--expected-version", str(status["version"]),
+                    "--result", "failed_pre_go", "--charge-micro-usd", "0",
+                ],
+                check=True, capture_output=True, text=True,
+            )
+            json.loads(result.stdout)
+            status = provider_attempt(factory_root, run_id)
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+            raise CancelError("provider-only cancellation CAS failed") from error
+    validate_provider_only_terminal(status, plan)
+    provider_only_records_absent(factory_root, ticket, run_id)
+    replay = provider_only_receipt_replay(attempt_paths["receipt"], plan)
+    if replay is not None:
+        if replay["provider_attempt_sha256"] != digest(canonical(status)):
+            raise CancelError("existing cancellation receipt disagrees with the attempt")
+        return replay
+    receipt = {
+        "accounting_state": "failed_pre_go",
+        "charged_usd": "0",
+        "preview_hash": plan["preview_hash"],
+        "provider_attempt_sha256": digest(canonical(status)),
+        "reason": plan["reason"],
+        "run_id": run_id,
+        "schema": PROVIDER_ONLY_RECEIPT_SCHEMA,
+        "terminal_at": dt.datetime.fromtimestamp(
+            status["terminal_at"], dt.timezone.utc,
+        ).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "ticket": ticket,
+    }
+    try:
+        durable_create(attempt_paths["receipt"], canonical(receipt))
+    except FileExistsError:
+        replay = provider_only_receipt_replay(attempt_paths["receipt"], plan)
+        if replay is None or replay != receipt:
+            raise CancelError("cancellation receipt CAS failed")
+        return replay
+    return receipt
+
+
 def terminal_intent(
     manifest: dict[str, str], status: dict | None = None,
 ) -> dict[str, str] | None:
@@ -906,6 +1314,8 @@ def converge_stale_attempt(factory_root: Path, plan: dict) -> dict:
 
 
 def apply_plan(factory_root: Path, plan: dict, timeout: float) -> dict:
+    if plan.get("schema") == PROVIDER_ONLY_PLAN_SCHEMA:
+        return apply_provider_only_plan(factory_root, plan)
     attempt = paths(factory_root, plan["run_id"])
     replay = receipt_is_replay(attempt["receipt"], plan)
     if replay is not None:
@@ -1066,7 +1476,20 @@ def main() -> None:
             "reason": request["plan"]["reason"],
         }
     else:
-        result = emit_receipt(args.factory_root.resolve(), args.ticket, args.run_id)
+        factory_root = args.factory_root.resolve()
+        request = read_request(factory_root, args.ticket, args.run_id)
+        if request["plan"].get("schema") == PROVIDER_ONLY_PLAN_SCHEMA:
+            status = provider_attempt(factory_root, args.run_id)
+            validate_provider_only_terminal(status, request["plan"])
+            result = provider_only_receipt_replay(
+                paths(factory_root, args.run_id)["receipt"], request["plan"],
+            )
+            if result is None:
+                raise CancelError("provider-only cancellation receipt is missing")
+            if result["provider_attempt_sha256"] != digest(canonical(status)):
+                raise CancelError("existing cancellation receipt disagrees with the attempt")
+        else:
+            result = emit_receipt(factory_root, args.ticket, args.run_id)
     sys.stdout.buffer.write(canonical(result))
 
 

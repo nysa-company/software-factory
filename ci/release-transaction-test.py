@@ -2889,6 +2889,33 @@ class ReleaseTransactionTest(unittest.TestCase):
                 ):
                     RELEASE.validate_qualification_recovery_plan(changed)
 
+    def test_qualification_recovery_uses_source_launcher_account_database(self) -> None:
+        lane = {
+            "active": {
+                "kit_sha": "5" * 40, "project": "relay",
+                "runtime_ledger_path": str(self.root / "runtime-ledger.csv"),
+            },
+            "product": self.product,
+            "provider": self.root / "qualification/provider",
+            "root": self.root / "qualification",
+        }
+        environment = RELEASE.qualification_recovery_environment(lane)
+        expected = (
+            Path(environment["HOME"]) /
+            ".factory/accounting/cursor-account-admission-v1.sqlite3"
+        )
+        self.assertEqual(
+            Path(environment["FACTORY_CURSOR_ACCOUNT_DB"]), expected,
+        )
+        self.assertNotEqual(
+            expected, lane["provider"] / "accounting/cursor-account.sqlite3",
+        )
+        self.assertIn(
+            'CURSOR_ACCOUNT_DB="$HOME/.factory/accounting/'
+            'cursor-account-admission-v1.sqlite3"',
+            (ROOT / "scripts/factory-launch").read_text(encoding="utf-8"),
+        )
+
     def test_qualification_recovery_reuses_validated_existing_cancellation(self) -> None:
         runs = self.product / "factory/runs"
         runs.mkdir(parents=True)
@@ -2989,6 +3016,53 @@ class ReleaseTransactionTest(unittest.TestCase):
             provider.call_args.kwargs["environment"]["FACTORY_DISPATCH_ADMISSION_LOCK"],
             str(lane["root"] / "worktrees/relay/.dispatch-admission.lock"),
         )
+
+    def test_qualification_recovery_carries_provider_only_pre_go_attempt(self) -> None:
+        runs = self.product / "factory/runs"
+        runs.mkdir(parents=True)
+        run_id = "1787640905-99999999-cli"
+        provider_attempt = {
+            "attempt_id": run_id, "state": "reserved", "version": 2,
+        }
+        nested_plan = {
+            "preview_hash": "2" * 64,
+            "provider_attempt": provider_attempt,
+            "schema": "nysa.software-factory.provider-only-attempt-cancel-plan/v1",
+        }
+        lane = {
+            "active": {
+                "kit_sha": "5" * 40, "project": "relay",
+                "runtime_ledger_path": str(self.root / "runtime-ledger.csv"),
+            },
+            "product": self.product, "provider": self.root / "provider",
+            "root": self.root / "qualification",
+        }
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_attempt_cancel", return_value=nested_plan,
+            ),
+            mock.patch.object(
+                RELEASE, "run_json", return_value={"attempts": [provider_attempt]},
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_recovery_manifest",
+            ) as recovery_manifest,
+            mock.patch.object(
+                RELEASE, "qualification_recovery_row",
+            ) as recovery_row,
+            mock.patch.object(
+                RELEASE, "qualification_recovery_optional_digest", return_value=None,
+            ),
+        ):
+            attempt = RELEASE.qualification_recovery_attempt(
+                self.root / "factory", lane, "T-1", run_id,
+            )
+        self.assertEqual(attempt["nested_plan"], nested_plan)
+        self.assertEqual(attempt["provider_attempt"], provider_attempt)
+        self.assertIsNone(attempt["active_claim_sha256"])
+        self.assertIsNone(attempt["runtime_ledger_row"])
+        recovery_manifest.assert_not_called()
+        recovery_row.assert_not_called()
 
     def test_qualification_recovery_refuses_attempt_drift_before_cancellation(self) -> None:
         plan = self.recovery_plan()

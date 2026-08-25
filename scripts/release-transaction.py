@@ -5054,12 +5054,20 @@ def qualification_recovery_environment(
     project = lane["active"].get("project", "")
     if not SHA.fullmatch(source_sha) or not PROJECT.fullmatch(project):
         raise ReleaseError("qualification recovery source identity is invalid")
+    home = Path.home().resolve(strict=True)
     environment = {
-        "HOME": str(Path.home().resolve(strict=True)),
+        "HOME": str(home),
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "FACTORY_PROVIDER_DB": str(
             lane["provider"] / "accounting/state-v2.sqlite3"
         ),
+        "FACTORY_CURSOR_ACCOUNT_DB": str(
+            home / ".factory/accounting/cursor-account-admission-v1.sqlite3"
+        ),
+        "FACTORY_PROVIDER_ATTEMPT_ROOT": str(
+            lane["provider"] / "provider-attempts"
+        ),
+        "FACTORY_CLI_RUNTIME_ROOT": str(lane["root"]),
         "FACTORY_LEDGER": str(lane["active"]["runtime_ledger_path"]),
         "FACTORY_DURABLE_LEDGER": str(lane["product"] / "factory/ledger.csv"),
         "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
@@ -5231,10 +5239,18 @@ def qualification_recovery_attempt(
             "preview", "--factory-root", str(lane["product"]), "--ticket", ticket,
             "--run-id", run_id, "--reason", "operator_requested",
         ], "qualification cancellation preview")
-    manifest = qualification_recovery_manifest(
+    provider_only = (
+        nested.get("schema")
+        == "nysa.software-factory.provider-only-attempt-cancel-plan/v1"
+    )
+    manifest = None if provider_only else qualification_recovery_manifest(
         runs / f"{run_id}.meta",
     )
-    provider_attempt = manifest.get("provider_attempt_id", "")
+    provider_attempt = (
+        nested.get("provider_attempt", {}).get("attempt_id", "")
+        if provider_only and isinstance(nested.get("provider_attempt"), dict)
+        else manifest.get("provider_attempt_id", "") if manifest else ""
+    )
     if not SAFE_ID.fullmatch(provider_attempt):
         raise ReleaseError("qualification provider attempt identity is invalid")
     status = run_json([
@@ -5251,11 +5267,16 @@ def qualification_recovery_attempt(
     ):
         raise ReleaseError("qualification provider attempt identity is invalid")
     runtime = Path(lane["active"]["runtime_ledger_path"])
-    claim = runtime.parent / ".active-runs" / f"{ticket}.{manifest.get('role', '')}.lock/owner"
+    claim = (
+        None if provider_only else runtime.parent / ".active-runs"
+        / f"{ticket}.{manifest.get('role', '')}.lock/owner"
+    )
     lease = lane["product"] / f"factory/.dispatch-leases/{ticket}.json"
     return {
-        "active_claim_sha256": qualification_recovery_optional_digest(
-            claim, "qualification active-run owner",
+        "active_claim_sha256": None if claim is None else (
+            qualification_recovery_optional_digest(
+                claim, "qualification active-run owner",
+            )
         ),
         "dispatch_lease_sha256": qualification_recovery_optional_digest(
             lease, "qualification dispatch lease",
@@ -5263,7 +5284,9 @@ def qualification_recovery_attempt(
         "nested_plan": nested,
         "provider_attempt": attempts[0],
         "provider_attempt_sha256": digest(attempts[0]),
-        "runtime_ledger_row": qualification_recovery_row(runtime, run_id),
+        "runtime_ledger_row": (
+            None if provider_only else qualification_recovery_row(runtime, run_id)
+        ),
     }
 
 

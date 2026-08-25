@@ -566,6 +566,207 @@ def manifest_micro_usd(value: str) -> int:
     return int(amount)
 
 
+def canonical_owner_json(path: Path) -> dict[str, Any]:
+    raw = regular(path, mode=0o600)
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise QualificationError("provider cancellation evidence is invalid") from error
+    if not isinstance(value, dict) or raw != (canonical(value) + "\n").encode():
+        raise QualificationError("provider cancellation evidence is invalid")
+    return value
+
+
+def provider_only_failed_pre_go(
+    product: Path, attempt: dict[str, Any], manifest: dict[str, Any], project: str,
+    events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    fields = {
+        "account_route", "admitted_at", "attempt_id", "budget_day",
+        "cancellation_reason", "cancellation_requested_at", "charge_micro_usd",
+        "go_at", "machine_daily_cap_micro_usd", "policy_sha256", "prepared_at",
+        "product_daily_cap_micro_usd", "product_id", "provider_family",
+        "reserve_micro_usd", "state", "submitted_at", "terminal_at",
+        "terminal_result", "ticket_cap_micro_usd", "ticket_id", "updated_at",
+        "version",
+    }
+    admitted = attempt.get("admitted_at")
+    integers = (
+        attempt.get("prepared_at"), attempt.get("reserve_micro_usd"),
+        attempt.get("terminal_at"), attempt.get("updated_at"),
+        attempt.get("version"), attempt.get("product_daily_cap_micro_usd"),
+        attempt.get("ticket_cap_micro_usd"),
+        attempt.get("machine_daily_cap_micro_usd"),
+    )
+    if (
+        set(attempt) != fields
+        or not re.fullmatch(
+            r"[0-9]{9,}-[1-9][0-9]*-cli", attempt.get("attempt_id", ""),
+        )
+        or attempt.get("ticket_id") not in manifest["tickets"]
+        or attempt.get("product_id") != f"{project}:{manifest['factory_sha']}"
+        or attempt.get("state") != "terminal"
+        or attempt.get("terminal_result") != "failed_pre_go"
+        or attempt.get("charge_micro_usd") != 0
+        or attempt.get("go_at") is not None
+        or attempt.get("submitted_at") is not None
+        or attempt.get("cancellation_requested_at") is not None
+        or attempt.get("cancellation_reason") is not None
+        or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            for value in integers
+        )
+        or attempt.get("reserve_micro_usd", 0) <= 0
+        or attempt.get("terminal_at") != attempt.get("updated_at")
+        or attempt.get("terminal_at", -1) < attempt.get("prepared_at", 0)
+        or any(
+            attempt.get(name, -1) < attempt.get("reserve_micro_usd", 0)
+            for name in (
+                "machine_daily_cap_micro_usd",
+                "product_daily_cap_micro_usd", "ticket_cap_micro_usd",
+            )
+        )
+        or not re.fullmatch(
+            r"[A-Za-z0-9._:@-]{1,200}", attempt.get("provider_family", ""),
+        )
+        or not re.fullmatch(
+            r"[A-Za-z0-9._:@-]{1,200}", attempt.get("account_route", ""),
+        )
+        or not re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}", attempt.get("budget_day", ""),
+        )
+        or (
+            admitted is None
+            and (
+                attempt.get("version") != 2
+                or attempt.get("policy_sha256") is not None
+            )
+        )
+        or (
+            admitted is not None
+            and (
+                not isinstance(admitted, int) or isinstance(admitted, bool)
+                or admitted < attempt.get("prepared_at", 0)
+                or attempt.get("version") != 3
+                or not DIGEST.fullmatch(attempt.get("policy_sha256", ""))
+            )
+        )
+        or any(
+            item.get("provider_attempt_id") == attempt["attempt_id"]
+            for item in events
+        )
+    ):
+        raise QualificationError("provider accounting attempts do not reconcile")
+    request = canonical_owner_json(
+        product / f"factory/runs/{attempt['attempt_id']}.cancel-request.json",
+    )
+    receipt = canonical_owner_json(
+        product / f"factory/runs/{attempt['attempt_id']}.cancel.json",
+    )
+    plan = request.get("plan")
+    initial = plan.get("provider_attempt") if isinstance(plan, dict) else None
+    if not isinstance(initial, dict):
+        raise QualificationError("provider cancellation evidence is invalid")
+    initial_sha = hashlib.sha256(
+        (canonical(initial) + "\n").encode(),
+    ).hexdigest()
+    terminal_sha = hashlib.sha256(
+        (canonical(attempt) + "\n").encode(),
+    ).hexdigest()
+    unhashed = dict(plan)
+    unhashed.pop("preview_hash", None)
+    expected = dict(initial)
+    expected.update({
+        "charge_micro_usd": 0,
+        "state": "terminal",
+        "terminal_at": attempt["terminal_at"],
+        "terminal_result": "failed_pre_go",
+        "updated_at": attempt["terminal_at"],
+        "version": initial.get("version", -1) + 1,
+    })
+    if (
+        set(request) != {"plan", "requested_at", "schema"}
+        or request.get("schema")
+        != "nysa.software-factory.attempt-cancel-request/v1"
+        or set(plan) != {
+            "created_at", "nonce", "preview_hash", "provider_attempt",
+            "provider_attempt_sha256", "reason", "run_id", "schema", "ticket",
+        }
+        or plan.get("schema")
+        != "nysa.software-factory.provider-only-attempt-cancel-plan/v1"
+        or plan.get("run_id") != attempt["attempt_id"]
+        or plan.get("ticket") != attempt["ticket_id"]
+        or plan.get("reason") not in {"budget_exhausted", "operator_requested"}
+        or not re.fullmatch(r"[0-9a-f]{32}", plan.get("nonce", ""))
+        or plan.get("provider_attempt_sha256") != initial_sha
+        or plan.get("preview_hash") != hashlib.sha256(
+            (canonical(unhashed) + "\n").encode(),
+        ).hexdigest()
+        or set(initial) != fields
+        or initial.get("attempt_id") != attempt["attempt_id"]
+        or initial.get("ticket_id") != attempt["ticket_id"]
+        or initial.get("product_id") != attempt["product_id"]
+        or initial.get("state") not in {"prepared", "reserved"}
+        or initial.get("version") != (
+            1 if initial.get("state") == "prepared" else 2
+        )
+        or initial.get("go_at") is not None
+        or initial.get("submitted_at") is not None
+        or initial.get("terminal_at") is not None
+        or initial.get("terminal_result") is not None
+        or initial.get("charge_micro_usd") is not None
+        or initial.get("cancellation_requested_at") is not None
+        or initial.get("cancellation_reason") is not None
+        or (
+            initial.get("state") == "prepared"
+            and (
+                initial.get("admitted_at") is not None
+                or initial.get("policy_sha256") is not None
+                or initial.get("updated_at") != initial.get("prepared_at")
+            )
+        )
+        or (
+            initial.get("state") == "reserved"
+            and (
+                not isinstance(initial.get("admitted_at"), int)
+                or isinstance(initial.get("admitted_at"), bool)
+                or initial.get("admitted_at") < initial.get("prepared_at", 0)
+                or initial.get("updated_at") != initial.get("admitted_at")
+                or not DIGEST.fullmatch(initial.get("policy_sha256", ""))
+            )
+        )
+        or attempt.get("terminal_at", -1) < initial.get("updated_at", 0)
+        or attempt != expected
+        or set(receipt) != {
+            "accounting_state", "charged_usd", "preview_hash",
+            "provider_attempt_sha256", "reason", "run_id", "schema",
+            "terminal_at", "ticket",
+        }
+        or receipt.get("schema")
+        != "nysa.software-factory.provider-only-attempt-cancellation/v1"
+        or receipt.get("accounting_state") != "failed_pre_go"
+        or receipt.get("charged_usd") != "0"
+        or receipt.get("preview_hash") != plan["preview_hash"]
+        or receipt.get("provider_attempt_sha256") != terminal_sha
+        or receipt.get("reason") != plan["reason"]
+        or receipt.get("run_id") != plan["run_id"]
+        or receipt.get("ticket") != plan["ticket"]
+        or iso(request.get("requested_at", "")) > iso(receipt.get("terminal_at", ""))
+        or iso(plan.get("created_at", "")) > iso(request.get("requested_at", ""))
+        or iso(receipt.get("terminal_at", "")).timestamp()
+        != attempt["terminal_at"]
+    ):
+        raise QualificationError("provider cancellation evidence is invalid")
+    return {
+        "attempt_id": attempt["attempt_id"],
+        "charge_micro_usd": 0,
+        "manifest_sha256": None,
+        "reservation_micro_usd": attempt["reserve_micro_usd"],
+        "run_id": attempt["attempt_id"][:-4],
+        "ticket": attempt["ticket_id"],
+    }
+
+
 def provider_accounting_evidence(
     product: Path, manifest: dict[str, Any], passports: dict[str, dict[str, Any]],
     events: list[dict[str, Any]], provider_status: dict[str, Any], project: str,
@@ -635,9 +836,26 @@ def provider_accounting_evidence(
     ):
         raise QualificationError("provider accounting state is not terminal")
     by_id = {item.get("attempt_id"): item for item in attempts}
-    if len(by_id) != len(attempts) or set(by_id) != {item[0] for item in records}:
+    record_ids = {item[0] for item in records}
+    if (
+        len(by_id) != len(attempts)
+        or any(
+            not isinstance(attempt_id, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}", attempt_id)
+            for attempt_id in by_id
+        )
+        or not record_ids.issubset(set(by_id))
+    ):
         raise QualificationError("provider accounting attempts do not reconcile")
-    bound, planner_starts = [], {}
+    provider_only = [
+        provider_only_failed_pre_go(
+            product, by_id[attempt_id], manifest, project, events,
+        )
+        for attempt_id in sorted(set(by_id) - record_ids)
+    ]
+    if len({item["run_id"] for item in provider_only}) != len(provider_only):
+        raise QualificationError("provider accounting attempts do not reconcile")
+    bound, planner_starts = list(provider_only), {}
     for attempt_id, ticket, charge, value, digest in records:
         attempt = by_id[attempt_id]
         reserve = manifest_micro_usd(value.get("reserved_usd", ""))
@@ -777,7 +995,7 @@ def provider_accounting_evidence(
         "launch_void_count": sum(
             value.get("accounting_state") == "launch_void"
             for _attempt, _ticket, _charge, value, _digest in records
-        ),
+        ) + len(provider_only),
         "reservation_micro_usd": sum(item["reservation_micro_usd"] for item in bound),
         "terminal_charge_micro_usd": sum(item["charge_micro_usd"] for item in bound),
     }, planner_starts

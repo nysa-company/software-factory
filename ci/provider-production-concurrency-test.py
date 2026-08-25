@@ -186,6 +186,46 @@ class ProductionConcurrencyTest(unittest.TestCase):
         self.assertEqual(admitted["lease"]["trust_scope"], "development-local")
         self.assertTrue(self.cursor_account("release", lease)["released"])
 
+    def test_cursor_account_response_loss_cleanup_is_exact_and_idempotent(self) -> None:
+        self.apply()
+        lease = "response-loss-account"
+        self.assertTrue(self.cursor_account("acquire", lease)["admitted"])
+        script = f"""
+set -euo pipefail
+eval "$(sed -n '/^release_cursor_account_lease()/,/^}}/p' '{RUN_AGENT}')"
+CURSOR_ACCOUNT_LEASE_ACTIVE=1
+CURSOR_ACCOUNT_LEASE_ID='{lease}'
+CURSOR_ACCOUNT_OWNER_PID='{os.getpid()}'
+CURSOR_ACCOUNT_OWNER_PGID='{os.getpgrp()}'
+CURSOR_ACCOUNT_OWNER_START='{self.owner_start}'
+FACTORY_PROVIDER_DB='{self.state}/accounting/state-v2.sqlite3'
+FACTORY_CURSOR_ACCOUNT_DB='{self.state}/accounting/cursor-account.sqlite3'
+KIT_DIR='{ROOT}'
+release_cursor_account_lease
+[[ "$CURSOR_ACCOUNT_LEASE_ACTIVE" == 0 ]]
+CURSOR_ACCOUNT_LEASE_ACTIVE=1
+release_cursor_account_lease
+[[ "$CURSOR_ACCOUNT_LEASE_ACTIVE" == 0 ]]
+"""
+        result = subprocess.run(
+            ["/bin/bash", "-c", script], text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            self.coordinator(
+                "--account-db", str(self.state / "accounting/cursor-account.sqlite3"),
+                "account-status",
+            )["leases"],
+            [],
+        )
+        source = RUN_AGENT.read_text(encoding="utf-8")
+        block = source.index('if [[ "$CLI_CONCURRENT_RUN" -eq 1 && "$ADAPTER" == cursor-* ]]')
+        ownership = source.index("CURSOR_ACCOUNT_LEASE_ACTIVE=1", block)
+        self.assertLess(
+            ownership,
+            source.index('--account-db "$FACTORY_CURSOR_ACCOUNT_DB" account-acquire', block),
+        )
+
     def test_submission_capture_before_attempt_creation_is_a_noop(self) -> None:
         script = f"""
 set -euo pipefail
@@ -201,6 +241,100 @@ capture_submission_record
             text=True, timeout=30,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_failed_reserve_cannot_terminalize_conflicting_attempt(self) -> None:
+        self.apply()
+        attempt = "foreign-attempt"
+        original = self.reserve(attempt, "openai", "codex-native")["attempt"]
+        conflict = subprocess.run(
+            [
+                sys.executable, str(COORDINATOR), "--db",
+                str(self.state / "accounting/state-v2.sqlite3"), "reserve",
+                "--operation-id", f"{attempt}-conflict", "--attempt-id", attempt,
+                "--provider-family", "openai", "--account-route", "codex-native",
+                "--reserve-micro-usd", "1", "--product-id", "wanted-product",
+                "--ticket-id", "T-wanted", "--budget-day", "2026-07-29",
+                "--product-daily-cap-micro-usd", "10",
+                "--ticket-cap-micro-usd", "10",
+                "--machine-daily-cap-micro-usd", "10", "--policy",
+                str(self.state / "provider-policy.json"), "--configuration-lock",
+                str(self.state / "provider-configuration.lock"),
+            ],
+            text=True, capture_output=True, check=False,
+        )
+        self.assertNotEqual(conflict.returncode, 0)
+        policy_hash = json.loads(
+            (self.state / "isolated-v1.enabled").read_text(encoding="utf-8")
+        )["policy_sha256"]
+        script = f"""
+set -euo pipefail
+eval "$(sed -n '/^load_cli_attempt()/,/^release_cursor_account_lease()/p' \
+  '{RUN_AGENT}' | sed '$d')"
+CLI_ATTEMPT_ACTIVE=1
+CLI_ATTEMPT_ID='{attempt}'
+FACTORY_PROVIDER_DB='{self.state}/accounting/state-v2.sqlite3'
+KIT_DIR='{ROOT}'
+SELECTED_FAMILY=openai
+SELECTED_ACCOUNT_ROUTE_ID=codex-native
+PROVIDER_BUDGET_MICRO_VALUES=(1 10 10 10)
+CLI_PRODUCT_ID=wanted-product
+TICKET=T-wanted
+TODAY=2026-07-29
+ACTIVATED_POLICY_HASH='{policy_hash}'
+accounting_intent_is_durable() {{ return 1; }}
+! reconcile_cli_attempt failed
+[[ "$CLI_ATTEMPT_ACTIVE" == 1 ]]
+"""
+        cleanup = subprocess.run(
+            ["/bin/bash", "-c", script], text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(cleanup.returncode, 0, cleanup.stdout + cleanup.stderr)
+        current = self.coordinator("status", "--attempt-id", attempt)["attempts"][0]
+        self.assertEqual(current, {key: value for key, value in original.items() if key != "schema"})
+
+    def test_cleanup_refuses_go_attempt_with_foreign_policy(self) -> None:
+        self.apply()
+        attempt = "foreign-policy"
+        reserved = self.reserve(attempt, "openai", "codex-native")["attempt"]
+        self.coordinator(
+            "mark-go", "--operation-id", f"{attempt}-go", "--attempt-id", attempt,
+            "--expected-version", str(reserved["version"]),
+        )
+        database = self.state / "accounting/state-v2.sqlite3"
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                "UPDATE attempts SET policy_sha256=? WHERE attempt_id=?",
+                ("f" * 64, attempt),
+            )
+        policy_hash = json.loads(
+            (self.state / "isolated-v1.enabled").read_text(encoding="utf-8")
+        )["policy_sha256"]
+        script = f"""
+set -euo pipefail
+eval "$(sed -n '/^load_cli_attempt()/,/^release_cursor_account_lease()/p' \
+  '{RUN_AGENT}' | sed '$d')"
+CLI_ATTEMPT_ACTIVE=1
+CLI_ATTEMPT_ID='{attempt}'
+FACTORY_PROVIDER_DB='{database}'
+KIT_DIR='{ROOT}'
+SELECTED_FAMILY=openai
+SELECTED_ACCOUNT_ROUTE_ID=codex-native
+PROVIDER_BUDGET_MICRO_VALUES=(1 10 10 10)
+CLI_PRODUCT_ID=product
+TICKET=T-y
+TODAY=2026-07-29
+ACTIVATED_POLICY_HASH='{policy_hash}'
+accounting_intent_is_durable() {{ return 1; }}
+! reconcile_cli_attempt failed
+[[ "$CLI_ATTEMPT_ACTIVE" == 1 ]]
+"""
+        cleanup = subprocess.run(
+            ["/bin/bash", "-c", script], text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(cleanup.returncode, 0, cleanup.stdout + cleanup.stderr)
+        current = self.coordinator("status", "--attempt-id", attempt)["attempts"][0]
+        self.assertEqual(current["state"], "GO")
+        self.assertEqual(current["policy_sha256"], "f" * 64)
 
     def test_terminalization_uses_actual_charge_below_reservation(self) -> None:
         script = f"""
@@ -402,6 +536,16 @@ cleanup || true
         self.assertIn(
             "CLI_ATTEMPT_ACTIVE=0\n    echo \"CLI provider capacity or budget refused",
             RUN_AGENT.read_text(),
+        )
+        source = RUN_AGENT.read_text()
+        ownership = source.index(
+            "CLI_ATTEMPT_ACTIVE=1", source.index("CLI_RESERVATION_ARGS=("),
+        )
+        self.assertLess(
+            ownership, source.index('--db "$FACTORY_PROVIDER_DB" prepare', ownership),
+        )
+        self.assertLess(
+            ownership, source.index('--db "$FACTORY_PROVIDER_DB" reserve', ownership),
         )
 
     def prepare_runtime(self, adapter: str, attempt: str) -> Path:
