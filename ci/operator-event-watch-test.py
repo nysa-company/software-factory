@@ -436,7 +436,8 @@ class OperatorEventWatchTest(unittest.TestCase):
     ) -> None:
         self.write(self.source(
             "typed_recovery_refused", recovery_kind="qualification_fallback",
-            reason="manifest", error="token=never-project-this",
+            reason="attempt_count", failed_run_id="failed-run-1",
+            error="token=never-project-this",
         ))
         self.write(self.source(
             "ticket_recovery_failed", recovery="release-upgrade",
@@ -455,7 +456,11 @@ class OperatorEventWatchTest(unittest.TestCase):
         self.assertEqual(first.returncode, 0, first.stderr)
         refusal = json.loads(first.stdout)
         self.assertEqual(refusal["action"], "blocked_escalated")
-        self.assertEqual(refusal["reason"], "qualification_fallback:manifest")
+        self.assertEqual(refusal["reason"], "qualification_fallback:attempt_count")
+        self.assertEqual(refusal["run_id"], "failed-run-1")
+        self.assertIn("This release cannot resume", refusal["question"])
+        self.assertIn("no same-release command exists", refusal["question"])
+        self.assertIn("successor release or start a fresh cohort", refusal["question"])
         self.assertNotIn("never-project-this", first.stdout + first.stderr)
 
         second = self.run_watch(
@@ -511,6 +516,20 @@ class OperatorEventWatchTest(unittest.TestCase):
             ),
             self.state, "relay", "1-a.json",
         ))
+        for code in WATCH.QUALIFICATION_FALLBACK_REASONS:
+            with self.subTest(code=code):
+                projected = WATCH.action_event(
+                    self.source(
+                        "typed_recovery_refused", failed_run_id="failed-run-1",
+                        recovery_kind="qualification_fallback", reason=code,
+                    ),
+                    self.state, "relay", "1-a.json",
+                )
+                self.assertEqual(projected["run_id"], "failed-run-1")
+                self.assertIn(
+                    "successor release or start a fresh cohort",
+                    projected["question"],
+                )
 
         invalid = (
             self.source(
@@ -520,6 +539,11 @@ class OperatorEventWatchTest(unittest.TestCase):
             self.source(
                 "typed_recovery_refused", recovery_kind=[],
                 reason="manifest",
+            ),
+            self.source(
+                "typed_recovery_refused",
+                recovery_kind="qualification_fallback", reason="manifest",
+                failed_run_id="unsafe/run",
             ),
             self.source(
                 "ticket_recovery_abandoned", recovery="release-upgrade",

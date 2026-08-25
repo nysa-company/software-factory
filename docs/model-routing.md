@@ -209,6 +209,13 @@ typed family. The same release does not hot-loop them; a sealed successor may
 retry after repair. A passportless fallback already followed by release
 migration can reopen only when its failed terminal and approval authenticate
 the final fallback revision and every later revision is an exact Kit migration.
+Once that release-scoped refusal is authenticated in the controller claim,
+explicit `fallback-plan` stops before readiness or preview and cannot issue a
+new approval. It names the claim as evidence and states that no same-release
+preview exists; operator watch preserves the failed run and directs the
+developer to a certified successor or a fresh cohort. Existing exact `fallback`
+replay remains on its ordinary idempotent recovery path. A successor release is
+not rejected by the predecessor's refusal marker.
 
 ## Other profiles
 

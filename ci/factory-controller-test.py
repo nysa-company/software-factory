@@ -655,11 +655,24 @@ class FactoryControllerTest(unittest.TestCase):
         })
 
         fallback_ticket = "T-115"
+        fallback_receipt = "7" * 64
+        (self.product / "factory/runs/fallback-refused.meta").write_text(
+            "run_id=fallback-refused\n"
+            f"ticket={fallback_ticket}\n"
+            "accounting_state=completed\n"
+            "go_issued=1\n"
+            f"kit_sha={controller.release_path.name}\n"
+            "role=test-author\n"
+            "role_exit=provider_failed\n"
+            "task_submitted=1\n"
+            f"transition_receipt_sha256={fallback_receipt}\n",
+            encoding="utf-8",
+        )
         claims.append({
             "blocked_reason": "qualification-fallback-refused:manifest:"
             + controller.release_path.name,
             "branch": f"ticket/{fallback_ticket}", "lease": "6" * 64,
-            "receipt": "", "role": "", "status": "blocked",
+            "receipt": fallback_receipt, "role": "test-author", "status": "blocked",
             "ticket": fallback_ticket,
         })
 
@@ -712,6 +725,13 @@ class FactoryControllerTest(unittest.TestCase):
             next(event for event in events if event["event"] == "role_blocked")
             ["passport_sha256"],
             role_passport,
+        )
+        self.assertEqual(
+            next(
+                event for event in events
+                if event["event"] == "typed_recovery_refused"
+            )["failed_run_id"],
+            "fallback-refused",
         )
 
     def test_contract_block_migration_event_backfills_after_crash(self) -> None:

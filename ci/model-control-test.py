@@ -603,6 +603,136 @@ class ModelControlTest(unittest.TestCase):
         self.assertEqual(len(receipts), 1)
         self.assertTrue(json.loads(receipts[0].read_text())["consumed"])
 
+    def test_qualification_refusal_blocks_impossible_same_release_fallback(self):
+        for project in (
+            self.product / "factory/PROJECT.env",
+            self.workdir / "factory/PROJECT.env",
+        ):
+            project.write_text(project.read_text().replace(
+                "TICKET_BRANCH_PREFIX=ticket/", "TICKET_BRANCH_PREFIX=work/",
+            ))
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "branch", "-m", "work/T-901"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "add", "factory/PROJECT.env"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "commit", "-qm", "custom prefix"],
+            check=True,
+        )
+        self.command("pin", "--ticket", "T-901", "--workdir", str(self.workdir))
+        claims = self.controller_state / "claims"
+        claims.mkdir(mode=0o700)
+        current_receipt = "a" * 64
+        claim = claims / "T-901.json"
+        claim.write_text(json.dumps({
+            "blocked_reason": "qualification-fallback-refused:attempt_count:"
+            + self.kit_sha,
+            "branch": "work/T-901", "lease": "c" * 64,
+            "lease_released": True,
+            "schema": "nysa.software-factory.controller-claim/v1",
+            "receipt": current_receipt, "role": "builder",
+            "status": "blocked", "ticket": "T-901",
+            "worktree": str(self.workdir),
+        }))
+        claim.chmod(0o600)
+        self.environment.update({
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_RELEASE_SHA": self.kit_sha,
+            "FACTORY_RELEASE_CONTRACT_VERSION": "2.0.0",
+        })
+        arguments = (
+            "--ticket", "T-901", "--failed-run", "failed-run-2",
+            "--workdir", str(self.workdir),
+            "--reason", "provider_unavailable",
+        )
+        before = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        plan = self.workdir / "factory/route-plans/T-901.json"
+        before_claim = claim.read_bytes()
+        before_plan = plan.read_bytes()
+        before_status = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "status", "--porcelain"], text=True,
+        )
+        refused = self.command("fallback-plan", *arguments, check=False)
+        self.assertEqual(refused.returncode, 2)
+        error = json.loads(refused.stdout)["error"]
+        self.assertIn("qualification fallback is exhausted", error)
+        self.assertIn("impact=this ticket cannot resume", error)
+        self.assertIn(f"evidence={claim}", error)
+        self.assertIn("recovery_command=none", error)
+        fallback = self.command("fallback", *arguments, check=False)
+        self.assertNotIn("qualification fallback is exhausted", fallback.stdout)
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "rev-parse", "HEAD"], text=True,
+            ).strip(),
+            before,
+        )
+        self.assertEqual(claim.read_bytes(), before_claim)
+        self.assertEqual(plan.read_bytes(), before_plan)
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "status", "--porcelain"],
+                text=True,
+            ),
+            before_status,
+        )
+
+        parked_workdir = self.base / "parked/T-901"
+        parked_workdir.parent.mkdir()
+        subprocess.run(
+            [
+                "git", "-C", str(self.product), "worktree", "move",
+                str(self.workdir), str(parked_workdir),
+            ],
+            check=True,
+        )
+        arguments = (
+            "--ticket", "T-901", "--failed-run", "failed-run-2",
+            "--workdir", str(parked_workdir),
+            "--reason", "provider_unavailable",
+        )
+        parked = json.loads(before_claim)
+        parked.update(parked=True, lease="", worktree=str(parked_workdir))
+        parked.pop("lease_released")
+        claim.write_text(json.dumps(parked))
+        claim.chmod(0o600)
+        parked_refusal = self.command("fallback-plan", *arguments, check=False)
+        self.assertIn(
+            "qualification fallback is exhausted", parked_refusal.stdout,
+        )
+
+        malformed_claims = []
+        unparked = dict(parked)
+        unparked.pop("parked")
+        malformed_claims.append(unparked)
+        malformed_claims.append(dict(
+            parked, parked="yes", lease="c" * 64, lease_released=True,
+        ))
+        malformed_claims.append(dict(parked, branch="work/T-902"))
+        malformed_claims.append(dict(parked, worktree=str(self.product)))
+        malformed_claims.append(dict(parked, receipt=[]))
+        for malformed in malformed_claims:
+            claim.write_text(json.dumps(malformed))
+            claim.chmod(0o600)
+            unsafe = self.command("fallback-plan", *arguments, check=False)
+            self.assertEqual(
+                json.loads(unsafe.stdout)["error"],
+                "qualification fallback claim is unsafe",
+            )
+            self.assertEqual(unsafe.stderr, "")
+        claim.write_text(json.dumps(parked))
+        claim.chmod(0o600)
+
+        self.environment["FACTORY_RELEASE_SHA"] = "b" * 40
+        successor = self.command("fallback-plan", *arguments, check=False)
+        self.assertNotIn("qualification fallback is exhausted", successor.stdout)
+
     def test_sealed_fallback_auto_preserves_bounded_inner_refusal(self):
         self.command("pin", "--ticket", "T-901", "--workdir", str(self.workdir))
         release = self.base / "release"

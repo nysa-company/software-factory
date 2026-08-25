@@ -1270,8 +1270,25 @@ class Controller:
             )
             if fallback_refusal is not None:
                 if fallback_refusal.group(2) == self.release_path.name:
+                    fallback_terminal = self.terminal_for_receipt(
+                        ticket, claim.get("receipt", ""),
+                    )
+                    failed_run_id = (
+                        fallback_terminal.get("run_id")
+                        if (
+                            submitted_provider_failure(fallback_terminal)
+                            and fallback_terminal.get("go_issued") == "1"
+                            and fallback_terminal.get("role") == claim.get("role")
+                            and fallback_terminal.get("kit_sha")
+                            == self.release_path.name
+                        ) else None
+                    )
                     emit(
                         "typed_recovery_refused", ticket,
+                        **({"failed_run_id": failed_run_id} if re.fullmatch(
+                            r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+                            failed_run_id or "",
+                        ) else {}),
                         reason=fallback_refusal.group(1),
                         recovery_kind="qualification_fallback",
                     )
