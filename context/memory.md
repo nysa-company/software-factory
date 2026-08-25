@@ -8,7 +8,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Durable decisions use repository-local numbering beginning at Decision 1.
 - Stable operating truth lives in `docs/`; prompts, templates, and evidence stay colocated with consumers. Test-author and Builder ticket-log bookkeeping uses separate commits from test and implementation changes, and their focused ticket checks run locally; Reviewer consumes protected CI without rerunning verification. The operator preflight hydrates only evidence-bound immutable objects, batches read-only object checks, compares selected Builder ownership with protected Ready tickets, aggregates activation blockers, and makes network review explicit before certification. Qualification validates selected remote branches and exact prior-cohort control retries before publication, lets an exact prepared Ready receipt supersede an older reset head while retaining that authorization as lineage proof across protected-main churn, shares protected dependency truth, counts only role-control evidence appended after its sealed product SHA, preserves one exact-head retry for a parked preview timeout, reacquires parked semantic or contract-repair authority only at apply, admits exact source-release receipt warnings to controller-owned migration, maintains idle successor leases during long roles, and does not rerun new-admission checks once its exact cohort is fully accounted for.
 - Failed-attempt preview, replay, and historical committed-role checks carry only unchanged tracked baseline symlinks whose tree, index, and filesystem targets agree; every added, removed, changed, staged, or untracked symlink remains fail-closed.
-- A submitted Claude individual or organization-monthly spend-limit terminal is release-typed, fully accounted, and qualification-latched before another role launch; dirty role evidence stays blocked and unexported rather than becoming a secondary clean-cell controller error.
+- A submitted Claude individual or organization-monthly spend-limit terminal and a strict Cursor zero-turn usage-exhaustion terminal are release-typed, fully accounted, and qualification-latched before another role launch; Cursor missing-result and timeout terminals retain their bounded reason, and operator watch explains whether to restore capacity or inspect provider availability. Dirty role evidence stays blocked and unexported rather than becoming a secondary clean-cell controller error.
 - Any nonrecoverable role terminal in a fixed qualification cohort latches the same atomic launch boundary before the claim blocks or cancels; bounded invalid-output, prior-release launch-void, direct-model identity, and authenticated Cursor fallback recovery remain runnable, while already-admitted siblings only drain and account.
 - Qualification fallback and finish are ticket-independent within the sealed cohort: one candidate-scoped role attempt may fall back, but a replaced transition receipt cannot reopen that role before an intervening same-role success; explicit v1 fallback migrates atomically under the same approval, and blocked siblings do not starve an independent typed wait or approval. Aggregate same-head retry accepts only the safe current or legacy Factory `ci` template grammar.
 - Recognized GitHub/Git transport loss is a typed wait, never a cohort defect. Exact remote confirmation and receipt/passport-bound replay resume post-provider role and publication commits without another model call; a disconnect inside a submitted provider attempt remains terminal-accounted and is not transport-replayed.
@@ -8235,4 +8235,16 @@ Category: System change
 The disposable Cursor inventory probe accepts exactly either the current bare
 approved version line or the legacy `Cursor Agent`-prefixed line. Ownership,
 mode, link, size, stable-read, extra-line, and unsafe-byte checks remain
+unchanged.
+
+## 2026-08-25 — Decision 607: Provider capacity failures stay human-readable
+
+Category: Reliability
+
+The shared terminal classifier recognizes Claude's strict submitted 429 shape
+and Cursor's bounded zero-turn missing-result shape without retaining raw logs.
+An exact redacted Cursor action-required usage message becomes
+`provider_spend_limit`; typed timeouts keep their reason and other missing
+results become `provider_unavailable`. Operator watch explains the supported
+next step while accounting, fallback limits, and fail-closed recovery remain
 unchanged.

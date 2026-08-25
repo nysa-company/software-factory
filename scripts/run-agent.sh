@@ -3677,15 +3677,18 @@ fi
 
 if [[ "$ROLE_OUTPUT_VALID" -eq 1 &&
       "$TASK_SUBMITTED" -eq 1 &&
-      "$ADAPTER" == "claude-code" &&
+      ( "$ADAPTER" == "claude-code" ||
+        "$ADAPTER" == "cursor-openai" ||
+        "$ADAPTER" == "cursor-anthropic" ) &&
       "$ROLE_EXIT_STATUS" == "provider_failed" &&
       -z "$TERMINAL_REASON_CODE" ]]; then
   CLASSIFIED_TERMINAL_REASON="$(python3 \
     "$KIT_DIR/scripts/lib/role_output.py" terminal-reason-code \
     "$RUNS_DIR/$RUN_ID.out" "$ADAPTER" 2>/dev/null || true)"
-  if [[ "$CLASSIFIED_TERMINAL_REASON" == "provider_spend_limit" ]]; then
-    TERMINAL_REASON_CODE="$CLASSIFIED_TERMINAL_REASON"
-  fi
+  case "$CLASSIFIED_TERMINAL_REASON" in
+    provider_spend_limit|provider_unavailable|soft_timeout|hard_timeout|invalid_progress)
+      TERMINAL_REASON_CODE="$CLASSIFIED_TERMINAL_REASON" ;;
+  esac
 fi
 
 METRICS_LINE=""

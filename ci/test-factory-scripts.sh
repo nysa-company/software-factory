@@ -238,6 +238,10 @@ case "$MODEL" in
 esac
 REPORTED_MODEL="${STUB_CURSOR_REPORTED_MODEL:-$REPORTED_MODEL}"
 printf '{"type":"system","subtype":"init","model":"%s","cwd":"%s"}\n' "$REPORTED_MODEL" "$WORKSPACE"
+if [[ "${STUB_CURSOR_SPEND_LIMIT:-0}" == "1" ]]; then
+  echo "ActionRequiredError: Increase limits for faster responses. You're out of usage; increase your limit to continue."
+  exit 1
+fi
 echo '{"type":"assistant","message":{"content":"Authorization: Bearer abc123 https://user:pass@example.com"},"api_token":"supersecret"}'
 echo '{"type":"assistant","message":{"content":"stub 2"}}'
 echo '{"type":"result","subtype":"success","usage":{"inputTokens":"70","outputTokens":20,"cacheReadTokens":10,"cacheWriteTokens":5}}'
@@ -1106,9 +1110,6 @@ write_backend_global "$CURSOR_GLOBAL" \
 export CURSOR_AGENT_BIN=$CURSOR_AGENT_WRAPPER"
 PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
   CURSOR_AGENT_VERSION=2026.07.test \
-  FACTORY_PROBE_CODEX=READY:test FACTORY_PROBE_CLAUDE_CODE=READY:test \
-  FACTORY_PROBE_CURSOR_OPENAI=READY:test \
-  FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test \
   bash -c 'source "$1"; factory_resolve_model_profile cursor-balanced-v2 "$2"' \
     _ "$SEALED_RELEASE/scripts/lib/backend-policy.sh" "$CURSOR_RESOLUTION"
 mkdir -p "$SEALED_PRODUCT/factory/route-plans"
@@ -1928,6 +1929,60 @@ if [[ "$MALFORMED_STATUS" -eq 9 &&
   pass "malformed Cursor output fails without another task"
 else
   fail "malformed Cursor output fails without another task" "status $MALFORMED_STATUS"
+fi
+
+# Cursor usage exhaustion is typed and keeps the conservative reservation.
+CURSOR_SPEND_LIMIT="$TMP/cursor-provider-spend-limit"
+write_envelope "$CURSOR_SPEND_LIMIT"
+write_ticket "$CURSOR_SPEND_LIMIT" T-240
+CURSOR_SPEND_RESOLUTION="$TMP/cursor-provider-spend-resolution.json"
+PATH="$STUB_BIN:$PATH" FACTORY_CURSOR_FALLBACK_ENABLED=1 \
+  CURSOR_AGENT_VERSION=2026.07.test \
+  FACTORY_PROBE_CODEX=READY:test FACTORY_PROBE_CLAUDE_CODE=READY:test \
+  FACTORY_PROBE_CURSOR_OPENAI=READY:test \
+  FACTORY_PROBE_CURSOR_ANTHROPIC=READY:test \
+  bash -c 'source "$1"; factory_resolve_model_profile cursor-balanced-v2 "$2"' \
+    _ "$ROOT/scripts/lib/backend-policy.sh" "$CURSOR_SPEND_RESOLUTION"
+CURSOR_SPEND_STATE="$TMP/cursor-provider-spend-state"
+mkdir -p "$CURSOR_SPEND_STATE"
+python3 "$ROOT/scripts/model-manager.py" pin \
+  --state-root "$CURSOR_SPEND_STATE" --project cursor-spend-test \
+  --ticket T-240 --kit-sha "$KIT_SHA" \
+  --resolution-file "$CURSOR_SPEND_RESOLUTION" \
+  --output "$CURSOR_SPEND_LIMIT/factory/route-plans/T-240.json" >/dev/null
+CURSOR_SPEND_REMOTE="$TMP/cursor-provider-spend-origin.git"
+git init --bare -q "$CURSOR_SPEND_REMOTE"
+git -C "$CURSOR_SPEND_LIMIT" add .gitignore factory/tickets/T-240.md \
+  factory/route-plans/T-240.json
+git -C "$CURSOR_SPEND_LIMIT" -c user.name=test -c user.email=test@example.com \
+  commit -qm "Pin Cursor spend-limit route"
+git -C "$CURSOR_SPEND_LIMIT" remote add origin "$CURSOR_SPEND_REMOTE"
+git -C "$CURSOR_SPEND_LIMIT" push -qu origin HEAD
+CURSOR_SPEND_GLOBAL="$TMP/cursor-provider-spend-global/global.env"
+write_backend_global "$CURSOR_SPEND_GLOBAL" \
+  "export FACTORY_PROBE_CURSOR_OPENAI=READY:test"
+CURSOR_SPEND_STATUS=0
+PATH="$STUB_BIN:$PATH" FACTORY_ROOT="$CURSOR_SPEND_LIMIT" \
+  FACTORY_GLOBAL_ENV="$CURSOR_SPEND_GLOBAL" \
+  FACTORY_MODEL_STATE_ROOT="$CURSOR_SPEND_STATE" \
+  FACTORY_PROJECT=cursor-spend-test \
+  FACTORY_CERTIFIED_PRODUCT_ORIGIN="$CURSOR_SPEND_REMOTE" \
+  FACTORY_TEST_ENFORCE_ROLE_EXIT=1 \
+  STUB_CURSOR_SPEND_LIMIT=1 \
+  "$RUN_AGENT" --role planner --ticket T-240 -- "cursor spend limit" \
+  >/dev/null 2>&1 || CURSOR_SPEND_STATUS=$?
+CURSOR_SPEND_META="$(ls "$CURSOR_SPEND_LIMIT/factory/runs/"*.meta 2>/dev/null || true)"
+if [[ "$CURSOR_SPEND_STATUS" -eq 1 && -n "$CURSOR_SPEND_META" ]] &&
+   grep -q '^adapter=cursor-openai$' "$CURSOR_SPEND_META" &&
+   grep -q '^task_submitted=1$' "$CURSOR_SPEND_META" &&
+   grep -q '^role_exit=provider_failed$' "$CURSOR_SPEND_META" &&
+   grep -q '^terminal_reason_code=provider_spend_limit$' "$CURSOR_SPEND_META" &&
+   grep -q '^accounting_state=abandoned_conservative$' "$CURSOR_SPEND_META" &&
+   grep -q '^effective_cost=1.00$' "$CURSOR_SPEND_META"; then
+  pass "Cursor usage exhaustion is visible without losing accounting"
+else
+  fail "Cursor usage exhaustion is visible without losing accounting" \
+    "status=$CURSOR_SPEND_STATUS reason=$(sed -n 's/^terminal_reason_code=//p' "${CURSOR_SPEND_META:-/dev/null}") accounting=$(sed -n 's/^accounting_state=//p' "${CURSOR_SPEND_META:-/dev/null}")"
 fi
 
 # A reported opposite-family model fails closed despite successful CLI exit.

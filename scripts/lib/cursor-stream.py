@@ -41,6 +41,11 @@ PRIVATE_KEY = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
     re.DOTALL,
 )
+USAGE_EXHAUSTED = re.compile(
+    r"(?i)ActionRequiredError: (?=[^\r\n]{1,512}\Z)"
+    r"(?=[^\r\n]*\byou(?:'re| are) out of usage\b)"
+    r"(?=[^\r\n]*\bincrease (?:limits|your limit)\b)[^\r\n]+"
+)
 
 def dictionaries(value: Any) -> Iterator[dict[str, Any]]:
     if isinstance(value, dict):
@@ -157,6 +162,7 @@ def main() -> int:
     repeated_tool_error_count = 0
     repeated_tool_error_limit_exceeded = False
     progress_events = 0
+    usage_exhausted = 0
     progress_digest = hashlib.sha256()
     progress_stream = None
     if progress_path is not None:
@@ -173,6 +179,7 @@ def main() -> int:
             try:
                 event = json.loads(line)
             except (TypeError, json.JSONDecodeError):
+                usage_exhausted += USAGE_EXHAUSTED.fullmatch(line) is not None
                 if line.lstrip().startswith(("{", "[")):
                     malformed_json = True
                 if "-----BEGIN" in line and "PRIVATE KEY-----" in line:
@@ -295,7 +302,12 @@ def main() -> int:
         )
         return 14
     if not terminal_success:
-        print("cursor stream has no terminal success result", file=sys.stderr)
+        print(
+            "cursor stream provider usage exhausted"
+            if usage_exhausted == 1
+            else "cursor stream has no terminal success result",
+            file=sys.stderr,
+        )
         return 10
     if malformed_json:
         print("cursor stream contains malformed JSON events", file=sys.stderr)

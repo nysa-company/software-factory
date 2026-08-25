@@ -129,7 +129,7 @@ def _stable_bytes(path: Path) -> bytes:
 
 def terminal_reason_code(path: Path, adapter: str) -> str:
     """Classify one exact, bounded provider terminal without copying its text."""
-    if adapter != "claude-code":
+    if adapter not in {"claude-code", "cursor-openai", "cursor-anthropic"}:
         return ""
 
     def unique_object(pairs):
@@ -142,6 +142,52 @@ def terminal_reason_code(path: Path, adapter: str) -> str:
 
     try:
         lines = _stable_bytes(path).decode("utf-8").splitlines()
+        if adapter.startswith("cursor-"):
+            if len(lines) < 3:
+                return ""
+            metrics = re.fullmatch(
+                r"turns=(?P<turns>[0-9]{1,4})"
+                r"(?: estimated_cost_usd=[0-9]{1,7}(?:[.][0-9]{1,18})?"
+                r" cost_basis=conservative_reservation"
+                r" pricing_snapshot_date=[0-9]{4}-[0-9]{2}-[0-9]{2}"
+                r" input_rate=[0-9]{1,7}(?:[.][0-9]{1,18})?"
+                r" output_rate=[0-9]{1,7}(?:[.][0-9]{1,18})?"
+                r" cache_rate=[0-9]{1,7}(?:[.][0-9]{1,18})?"
+                r"| cost_basis=conservative_reservation)"
+                r" input_tokens=[0-9]{1,18} output_tokens=[0-9]{1,18}"
+                r" cache_tokens=[0-9]{1,18} progress_events=[0-9]{1,6}"
+                r" progress_sha256=[0-9a-f]{64}"
+                r" timeout_kind=(?P<timeout>soft_timeout|hard_timeout|invalid_progress)?",
+                lines[-1],
+            )
+            if (
+                metrics is None
+                or metrics.group("turns") != "0"
+                or lines[-2] not in {
+                    "cursor stream has no terminal success result",
+                    "cursor stream provider usage exhausted",
+                }
+                or lines.count(lines[-2]) != 1
+            ):
+                return ""
+            if metrics.group("timeout"):
+                return metrics.group("timeout")
+            for line in lines[:-2]:
+                try:
+                    event = json.loads(line, object_pairs_hook=unique_object)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if (
+                    isinstance(event, dict)
+                    and event.get("type") == "result"
+                    and event.get("subtype") == "success"
+                ):
+                    return ""
+            return (
+                "provider_spend_limit"
+                if lines[-2] == "cursor stream provider usage exhausted"
+                else "provider_unavailable"
+            )
         if (
             len(lines) != 2
             or re.fullmatch(

@@ -1070,6 +1070,49 @@ class TicketPassportTest(unittest.TestCase):
             ROLE_OUTPUT.terminal_reason_code(output, "claude-code"), ""
         )
 
+    def test_cursor_terminal_reason_is_strict(self) -> None:
+        output = self.product / "factory/runs/cursor-terminal.out"
+        metrics = (
+            "turns=0 cost_basis=conservative_reservation input_tokens=0 "
+            "output_tokens=0 cache_tokens=0 progress_events=1 "
+            f"progress_sha256={'a' * 64} timeout_kind="
+        )
+        init = json.dumps({
+            "type": "system", "subtype": "init", "model": "cursor-model",
+        }, separators=(",", ":"))
+
+        def classify(*lines, adapter="cursor-anthropic", final=metrics):
+            output.write_text("\n".join((*lines, final)) + "\n", encoding="utf-8")
+            os.chmod(output, 0o600)
+            return ROLE_OUTPUT.terminal_reason_code(output, adapter)
+
+        missing = "cursor stream has no terminal success result"
+        exhausted = "cursor stream provider usage exhausted"
+        self.assertEqual(
+            classify(init, exhausted), "provider_spend_limit"
+        )
+        self.assertEqual(
+            classify(init, exhausted, adapter="cursor-openai"),
+            "provider_spend_limit",
+        )
+        self.assertEqual(classify(init, missing), "provider_unavailable")
+        self.assertEqual(
+            classify(init, missing, final=metrics + "soft_timeout"),
+            "soft_timeout",
+        )
+        terminal = json.dumps(
+            {"type": "result", "subtype": "success"}, separators=(",", ":")
+        )
+        for lines, adapter, final in (
+            ((init, exhausted), "claude-code", metrics),
+            ((init, "upstream unavailable"), "cursor-anthropic", metrics),
+            ((init, exhausted, exhausted), "cursor-anthropic", metrics),
+            ((init, terminal, missing), "cursor-anthropic", metrics),
+            ((init, exhausted), "cursor-anthropic", metrics.replace("turns=0", "turns=1")),
+            ((init, exhausted), "cursor-anthropic", metrics + "extra"),
+        ):
+            self.assertEqual(classify(*lines, adapter=adapter, final=final), "")
+
     def test_run_agent_terminalizes_oversized_role_output(self) -> None:
         factory_sha = run("git", "rev-parse", "HEAD", cwd=ROOT)
         release = self.root / "release"
