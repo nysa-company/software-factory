@@ -1467,15 +1467,154 @@ load_cli_attempt() {
     --db "$FACTORY_PROVIDER_DB" status --attempt-id "$CLI_ATTEMPT_ID" 2>/dev/null)" || return 1
   parsed="$(printf '%s' "$output" | python3 -c '
 import json, sys
-attempts = json.load(sys.stdin).get("attempts", [])
-if len(attempts) != 1:
+
+value = json.load(sys.stdin)
+attempts = value.get("attempts", [])
+if value.get("schema") != "factory-provider-coordinator/v1" or len(attempts) != 1:
     raise SystemExit(1)
-print(attempts[0]["state"])
-print(attempts[0]["version"])
-print(attempts[0]["submitted_at"] if attempts[0]["submitted_at"] is not None else "none")
-print(attempts[0]["terminal_result"] if attempts[0]["terminal_result"] is not None else "none")
-print(attempts[0]["charge_micro_usd"] if attempts[0]["charge_micro_usd"] is not None else "none")
-')" || return 1
+attempt = attempts[0]
+expected_keys = {
+    "account_route", "admitted_at", "attempt_id", "budget_day",
+    "cancellation_reason", "cancellation_requested_at", "charge_micro_usd",
+    "go_at", "machine_daily_cap_micro_usd", "policy_sha256", "prepared_at",
+    "product_daily_cap_micro_usd", "product_id", "provider_family",
+    "reserve_micro_usd", "state", "submitted_at", "terminal_at",
+    "terminal_result", "ticket_cap_micro_usd", "ticket_id", "updated_at",
+    "version",
+}
+expected = {
+    "attempt_id": sys.argv[1],
+    "provider_family": sys.argv[2],
+    "account_route": sys.argv[3],
+    "reserve_micro_usd": int(sys.argv[4]),
+    "product_id": sys.argv[5],
+    "ticket_id": sys.argv[6],
+    "budget_day": sys.argv[7],
+    "product_daily_cap_micro_usd": int(sys.argv[8]),
+    "ticket_cap_micro_usd": int(sys.argv[9]),
+    "machine_daily_cap_micro_usd": int(sys.argv[10]),
+}
+if not isinstance(attempt, dict) or set(attempt) != expected_keys or any(
+    attempt.get(key) != selected for key, selected in expected.items()
+):
+    raise SystemExit(1)
+state = attempt.get("state")
+prepared = attempt.get("prepared_at")
+admitted = attempt.get("admitted_at")
+go = attempt.get("go_at")
+submitted = attempt.get("submitted_at")
+terminal = attempt.get("terminal_at")
+if not isinstance(prepared, int) or isinstance(prepared, bool):
+    raise SystemExit(1)
+if state == "prepared":
+    if (
+        attempt.get("version") != 1
+        or attempt.get("admitted_at") is not None
+        or attempt.get("policy_sha256") is not None
+        or attempt.get("updated_at") != attempt.get("prepared_at")
+        or any(attempt.get(key) is not None for key in (
+            "go_at", "submitted_at", "terminal_at", "terminal_result",
+            "charge_micro_usd", "cancellation_requested_at",
+            "cancellation_reason",
+        ))
+    ):
+        raise SystemExit(1)
+elif state == "reserved":
+    if (
+        attempt.get("version") != 2
+        or attempt.get("policy_sha256") != sys.argv[11]
+        or not isinstance(attempt.get("admitted_at"), int)
+        or isinstance(attempt.get("admitted_at"), bool)
+        or admitted < prepared
+        or attempt.get("updated_at") != attempt.get("admitted_at")
+        or any(attempt.get(key) is not None for key in (
+            "go_at", "submitted_at", "terminal_at", "terminal_result",
+            "charge_micro_usd", "cancellation_requested_at",
+            "cancellation_reason",
+        ))
+    ):
+        raise SystemExit(1)
+elif state == "GO":
+    if (
+        attempt.get("version") != 3
+        or attempt.get("policy_sha256") != sys.argv[11]
+        or any(not isinstance(value, int) or isinstance(value, bool)
+               for value in (admitted, go))
+        or not prepared <= admitted <= go
+        or attempt.get("updated_at") != go
+        or any(attempt.get(key) is not None for key in (
+            "submitted_at", "terminal_at", "terminal_result", "charge_micro_usd",
+            "cancellation_requested_at", "cancellation_reason",
+        ))
+    ):
+        raise SystemExit(1)
+elif state == "submitted":
+    requested, reason = (
+        attempt.get("cancellation_requested_at"), attempt.get("cancellation_reason")
+    )
+    if (
+        attempt.get("version") != 4
+        or attempt.get("policy_sha256") != sys.argv[11]
+        or any(not isinstance(value, int) or isinstance(value, bool)
+               for value in (admitted, go, submitted))
+        or not prepared <= admitted <= go <= submitted
+        or attempt.get("updated_at") != submitted
+        or any(attempt.get(key) is not None for key in (
+            "terminal_at", "terminal_result", "charge_micro_usd",
+        ))
+        or ((requested is None) != (reason is None))
+        or (requested is not None and (
+            not isinstance(requested, int) or isinstance(requested, bool)
+            or requested < submitted or not isinstance(reason, str)
+        ))
+    ):
+        raise SystemExit(1)
+elif state == "terminal":
+    if (
+        not isinstance(terminal, int) or isinstance(terminal, bool)
+        or attempt.get("updated_at") != terminal
+        or not isinstance(attempt.get("charge_micro_usd"), int)
+        or isinstance(attempt.get("charge_micro_usd"), bool)
+        or not isinstance(attempt.get("terminal_result"), str)
+    ):
+        raise SystemExit(1)
+    if attempt.get("policy_sha256") is None:
+        if (
+            attempt.get("version") != 2
+            or any(value is not None for value in (admitted, go, submitted))
+            or terminal < prepared
+            or attempt.get("charge_micro_usd") != 0
+            or attempt.get("terminal_result") not in {
+                "capacity_denied", "failed_pre_go", "cancelled"
+            }
+        ):
+            raise SystemExit(1)
+    elif (
+        attempt.get("policy_sha256") != sys.argv[11]
+        or not isinstance(admitted, int) or isinstance(admitted, bool)
+        or terminal < admitted
+        or (submitted is not None and (
+            attempt.get("version") != 5 or not isinstance(go, int)
+            or not isinstance(submitted, int) or not admitted <= go <= submitted <= terminal
+        ))
+        or (submitted is None and go is not None and (
+            attempt.get("version") != 4 or not isinstance(go, int)
+            or not admitted <= go <= terminal
+        ))
+        or (submitted is None and go is None and attempt.get("version") != 3)
+    ):
+        raise SystemExit(1)
+else:
+    raise SystemExit(1)
+print(state)
+print(attempt["version"])
+print(attempt["submitted_at"] if attempt["submitted_at"] is not None else "none")
+print(attempt["terminal_result"] if attempt["terminal_result"] is not None else "none")
+print(attempt["charge_micro_usd"] if attempt["charge_micro_usd"] is not None else "none")
+' "$CLI_ATTEMPT_ID" "$SELECTED_FAMILY" "$SELECTED_ACCOUNT_ROUTE_ID" \
+    "${PROVIDER_BUDGET_MICRO_VALUES[0]}" "$CLI_PRODUCT_ID" "$TICKET" "$TODAY" \
+    "${PROVIDER_BUDGET_MICRO_VALUES[1]}" "${PROVIDER_BUDGET_MICRO_VALUES[2]}" \
+    "${PROVIDER_BUDGET_MICRO_VALUES[3]}" "$ACTIVATED_POLICY_HASH")" || return 1
   CLI_ATTEMPT_STATE="${parsed%%$'\n'*}"
   remainder="${parsed#*$'\n'}"
   CLI_ATTEMPT_VERSION="${remainder%%$'\n'*}"
@@ -1548,7 +1687,8 @@ release_cursor_account_lease() {
     --owner-start "$CURSOR_ACCOUNT_OWNER_START" 2>/dev/null)" || return 1
   printf '%s' "$output" | python3 -c '
 import json, sys
-raise SystemExit(0 if json.load(sys.stdin).get("released") is True else 1)
+value = json.load(sys.stdin)
+raise SystemExit(0 if value.get("released") in (True, False) else 1)
 ' || return 1
   CURSOR_ACCOUNT_LEASE_ACTIVE=0
 }
@@ -2435,6 +2575,9 @@ if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
     "${CLI_CONFIGURATION_LOCK_ARGS[@]}" \
     --expected-policy-sha256 "$ACTIVATED_POLICY_HASH"
   )
+  # Own the coordinator commit/response ambiguity window. Cleanup re-reads the
+  # exact attempt and zero-terminalizes a committed pre-GO reservation.
+  CLI_ATTEMPT_ACTIVE=1
   if [[ "$PROVIDER_WAIT_SECONDS" -gt 0 ]]; then
     CLI_WAIT_ENVELOPE_BINDING="$RESERVED_USD|$DAILY_CAP_USD|$PER_TICKET_BUDGET_USD|${GLOBAL_DAILY_CAP_USD:-1000000000}"
     python3 "$KIT_DIR/scripts/provider-coordinator.py" \
@@ -2444,7 +2587,6 @@ if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
         echo "CLI provider preparation failed; no task was submitted" >&2
         exit 8
       }
-    CLI_ATTEMPT_ACTIVE=1
     start_lease_heartbeat
     rmdir "$LAUNCH_LOCK"
     HELD_LAUNCH_LOCK=0
@@ -2534,7 +2676,6 @@ raise SystemExit(0 if json.load(sys.stdin).get("admitted") is True else 1)
     echo "CLI provider capacity or budget refused; no task was submitted" >&2
     exit 8
   fi
-  CLI_ATTEMPT_ACTIVE=1
 fi
 if [[ "$CLI_CONCURRENT_RUN" -eq 1 && "$ADAPTER" == cursor-* ]]; then
   CURSOR_ACCOUNT_LEASE_ID="$CLI_ATTEMPT_ID-account"
@@ -2546,6 +2687,9 @@ if [[ "$CLI_CONCURRENT_RUN" -eq 1 && "$ADAPTER" == cursor-* ]]; then
     exit 8
   }
   CURSOR_ACCOUNT_ENVELOPE_BINDING="$RESERVED_USD|$DAILY_CAP_USD|$PER_TICKET_BUDGET_USD|${GLOBAL_DAILY_CAP_USD:-1000000000}"
+  # Own the account-acquire commit/response ambiguity window. Exact owner
+  # identity makes release safe, including when no lease was committed.
+  CURSOR_ACCOUNT_LEASE_ACTIVE=1
   rmdir "$LAUNCH_LOCK"
   HELD_LAUNCH_LOCK=0
   if CURSOR_ACCOUNT_RESERVATION="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
@@ -2610,7 +2754,6 @@ print("yes" if json.load(sys.stdin).get("stopped_by") else "")
     fi
     exit 8
   fi
-  CURSOR_ACCOUNT_LEASE_ACTIVE=1
   load_effective_envelope || {
     echo "effective envelope changed during Cursor account wait; no task was submitted" >&2
     exit 3

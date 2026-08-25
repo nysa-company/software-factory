@@ -8143,3 +8143,17 @@ candidate until an intervening successful same-role run starts a later
 authenticated role round. Reconciliation may replace transition receipts, but
 that replacement cannot reset the attempt boundary; exact failed-run replay
 remains idempotent and predecessor-candidate attempts stay outside the count.
+
+## 2026-08-25 — Decision 601: Pre-GO provider-only recovery stays exact
+
+Category: Reliability
+
+Subscription CLI cleanup owns provider and Cursor account admission before
+their coordinator mutations, then revalidates the complete expected identity
+before terminalization or release. If a hard interruption leaves an exact
+provider-only prepared or reserved attempt without GO, run, heartbeat, runtime,
+ledger, claim, or account-lease evidence, the existing approved cancellation
+and successor-recovery transactions may CAS-terminalize it once at zero cost.
+Qualification accepts that extra attempt only with its canonical request,
+receipt, initial snapshot, terminal row, source product, and release identity;
+every live, submitted, charged, foreign, partial, or ambiguous sibling refuses.

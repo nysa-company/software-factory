@@ -1232,6 +1232,17 @@ For takeover qualification the authenticated product worktree remains outside
 the sealed root, so candidate-scoped provider admission validates the
 launcher-supplied sealed lane root directly rather than requiring the product
 to be nested beneath it.
+An interrupted subscription CLI admission may lack a run manifest only before
+provider GO. Targeted cancellation accepts that provider-only boundary solely
+when the exact prepared or reserved coordinator row, product, ticket, policy,
+budgets, dead process identity, absent run/heartbeat/runtime/ledger/claim
+evidence, and absent Cursor account lease all agree. Its approved CAS writes a
+zero-cost `failed_pre_go` terminal plus canonical request and receipt; reducer
+replay independently verifies the complete snapshot and receipt. The same
+nested preview may run inside protected successor recovery for an immutable
+source lane, using the source launcher's exact global Cursor account database.
+GO, submission, charge, live or stale wrapper evidence, foreign identity,
+ambiguous account state, or partial records remain fail-closed.
 If a proven Factory defect requires a successor during an isolated fresh
 qualification, the same preparer upgrades that root only while reconciliation and provider work
 are drained. It seals the successor, verifies unchanged provider policy,

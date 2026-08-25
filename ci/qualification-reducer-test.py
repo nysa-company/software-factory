@@ -117,6 +117,67 @@ class QualificationReducerTest(unittest.TestCase):
         }
         return manifest, passports, events, status
 
+    @staticmethod
+    def provider_only_orphan(factory_sha="a" * 40):
+        return {
+            "account_route": "cursor-anthropic", "admitted_at": 2,
+            "attempt_id": "1787640905-99999999-cli",
+            "budget_day": "2026-08-25", "cancellation_reason": None,
+            "cancellation_requested_at": None, "charge_micro_usd": 0,
+            "go_at": None, "machine_daily_cap_micro_usd": 100_000_000,
+            "policy_sha256": "d" * 64, "prepared_at": 1,
+            "product_daily_cap_micro_usd": 100_000_000,
+            "product_id": f"relay-proof:{factory_sha}",
+            "provider_family": "anthropic", "reserve_micro_usd": 2_000_000,
+            "state": "terminal", "submitted_at": None, "terminal_at": 3,
+            "terminal_result": "failed_pre_go",
+            "ticket_cap_micro_usd": 25_000_000, "ticket_id": "T-1",
+            "updated_at": 3, "version": 3,
+        }
+
+    @staticmethod
+    def write_provider_only_evidence(root, terminal):
+        initial = {
+            **terminal, "charge_micro_usd": None, "state": "reserved",
+            "terminal_at": None, "terminal_result": None,
+            "updated_at": terminal["admitted_at"], "version": 2,
+        }
+        initial_raw = (REDUCER.canonical(initial) + "\n").encode()
+        plan = {
+            "created_at": "1970-01-01T00:00:02Z", "nonce": "e" * 32,
+            "provider_attempt": initial,
+            "provider_attempt_sha256": hashlib.sha256(initial_raw).hexdigest(),
+            "reason": "operator_requested", "run_id": terminal["attempt_id"],
+            "schema": "nysa.software-factory.provider-only-attempt-cancel-plan/v1",
+            "ticket": terminal["ticket_id"],
+        }
+        plan["preview_hash"] = hashlib.sha256(
+            (REDUCER.canonical(plan) + "\n").encode(),
+        ).hexdigest()
+        terminal_sha = hashlib.sha256(
+            (REDUCER.canonical(terminal) + "\n").encode(),
+        ).hexdigest()
+        values = {
+            f"{terminal['attempt_id']}.cancel-request.json": {
+                "plan": plan, "requested_at": "1970-01-01T00:00:02Z",
+                "schema": "nysa.software-factory.attempt-cancel-request/v1",
+            },
+            f"{terminal['attempt_id']}.cancel.json": {
+                "accounting_state": "failed_pre_go", "charged_usd": "0",
+                "preview_hash": plan["preview_hash"],
+                "provider_attempt_sha256": terminal_sha,
+                "reason": plan["reason"], "run_id": plan["run_id"],
+                "schema": "nysa.software-factory.provider-only-attempt-cancellation/v1",
+                "terminal_at": "1970-01-01T00:00:03Z",
+                "ticket": plan["ticket"],
+            },
+        }
+        runs = root / "factory/runs"
+        for name, value in values.items():
+            path = runs / name
+            path.write_text(REDUCER.canonical(value) + "\n")
+            path.chmod(0o600)
+
     def test_provider_accounting_is_bijective_and_deterministic(self):
         with tempfile.TemporaryDirectory() as directory:
             product = Path(directory)
@@ -147,6 +208,18 @@ class QualificationReducerTest(unittest.TestCase):
                 product, manifest, passports, events, denied, "relay-proof",
             )
 
+            orphan = self.provider_only_orphan()
+            self.write_provider_only_evidence(product, orphan)
+            status["attempts"].append(orphan)
+            recovered, recovered_planners = REDUCER.provider_accounting_evidence(
+                product, manifest, passports, events, status, "relay-proof",
+            )
+            self.assertEqual(recovered_planners, first_planners)
+            self.assertEqual(recovered["attempt_count"], 4)
+            self.assertEqual(recovered["launch_void_count"], 2)
+            self.assertEqual(recovered["reservation_micro_usd"], 8_000_000)
+            self.assertEqual(recovered["terminal_charge_micro_usd"], 3_250_000)
+
     def test_provider_accounting_refuses_missing_extra_and_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
             product = Path(directory)
@@ -162,6 +235,54 @@ class QualificationReducerTest(unittest.TestCase):
             with self.assertRaisesRegex(REDUCER.QualificationError, "do not reconcile"):
                 REDUCER.provider_accounting_evidence(
                     product, manifest, passports, events, extra, "relay-proof",
+                )
+            for field, value in (
+                ("charge_micro_usd", 1), ("go_at", 2),
+                ("product_id", "foreign"), ("state", "reserved"),
+                ("submitted_at", 2), ("terminal_result", "cancelled"),
+            ):
+                changed = copy.deepcopy(status)
+                orphan = self.provider_only_orphan()
+                self.write_provider_only_evidence(product, orphan)
+                changed["attempts"].append(orphan)
+                changed["attempts"][-1][field] = value
+                with self.subTest(orphan_field=field), self.assertRaisesRegex(
+                    REDUCER.QualificationError, "do not reconcile",
+                ):
+                    REDUCER.provider_accounting_evidence(
+                        product, manifest, passports, events, changed,
+                        "relay-proof",
+                    )
+            changed = copy.deepcopy(status)
+            orphan = self.provider_only_orphan()
+            self.write_provider_only_evidence(product, orphan)
+            changed["attempts"].append(orphan)
+            request_path = (
+                product / "factory/runs" /
+                f"{orphan['attempt_id']}.cancel-request.json"
+            )
+            receipt_path = (
+                product / "factory/runs" / f"{orphan['attempt_id']}.cancel.json"
+            )
+            request = json.loads(request_path.read_text(encoding="utf-8"))
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            initial = request["plan"]["provider_attempt"]
+            initial["updated_at"] = orphan["terminal_at"] + 1
+            request["plan"]["provider_attempt_sha256"] = hashlib.sha256(
+                (REDUCER.canonical(initial) + "\n").encode(),
+            ).hexdigest()
+            request["plan"].pop("preview_hash")
+            request["plan"]["preview_hash"] = hashlib.sha256(
+                (REDUCER.canonical(request["plan"]) + "\n").encode(),
+            ).hexdigest()
+            receipt["preview_hash"] = request["plan"]["preview_hash"]
+            request_path.write_text(REDUCER.canonical(request) + "\n")
+            receipt_path.write_text(REDUCER.canonical(receipt) + "\n")
+            with self.assertRaisesRegex(
+                REDUCER.QualificationError, "cancellation evidence is invalid",
+            ):
+                REDUCER.provider_accounting_evidence(
+                    product, manifest, passports, events, changed, "relay-proof",
                 )
             for field, value in (
                 ("ticket_id", "T-2"), ("provider_family", "anthropic"),

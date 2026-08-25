@@ -425,6 +425,198 @@ class AttemptCancellationTest(unittest.TestCase):
             ),
         )
 
+    def test_provider_only_pre_go_attempt_terminalizes_once_without_run_evidence(self):
+        database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"
+        release = "d" * 40
+        attempt_id = "1787640905-99999999-cli"
+        self.submitted_provider_attempt(
+            database, attempt_id=attempt_id, submit=False,
+            product_id=f"relay-proof:{release}",
+        )
+        environment = {
+            "FACTORY_PROJECT": "relay-proof",
+            "FACTORY_PROVIDER_DB": str(database),
+            "FACTORY_PROVIDER_PRODUCT_ID": f"relay-proof:{release}",
+            "FACTORY_RELEASE_SHA": release,
+        }
+        with mock.patch.dict(os.environ, environment, clear=False):
+            plan = CANCEL.calculate(
+                self.root, "T-1", attempt_id, "operator_requested", "8" * 32,
+            )
+            receipt = CANCEL.apply_plan(self.root, plan, 1)
+            self.assertEqual(
+                CANCEL.calculate(
+                    self.root, "T-1", attempt_id, "operator_requested", None,
+                ),
+                plan,
+            )
+            self.assertEqual(CANCEL.apply_plan(self.root, plan, 1), receipt)
+        terminal = self.provider_command(
+            database, "status", "--attempt-id", attempt_id,
+        )["attempts"][0]
+        self.assertEqual(
+            (
+                receipt["accounting_state"], receipt["charged_usd"],
+                terminal["state"], terminal["terminal_result"],
+                terminal["charge_micro_usd"], terminal["go_at"],
+                terminal["submitted_at"],
+            ),
+            ("failed_pre_go", "0", "terminal", "failed_pre_go", 0, None, None),
+        )
+        base_run = attempt_id[:-4]
+        self.assertFalse((self.runs / f"{base_run}.meta").exists())
+        self.assertFalse((self.runs / f"{base_run}.pid").exists())
+        with (self.root / "factory/runtime-ledger.csv").open(newline="") as handle:
+            self.assertFalse(any(
+                row.get("run_id") in {attempt_id, base_run}
+                for row in csv.DictReader(handle)
+            ))
+
+    def test_provider_only_attempt_refuses_live_and_stale_wrapper_records(self):
+        database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"
+        release = "c" * 40
+        attempt_id = "1787640905-99999998-cli"
+        self.submitted_provider_attempt(
+            database, attempt_id=attempt_id, submit=False,
+            product_id=f"relay-proof:{release}",
+        )
+        environment = {
+            "FACTORY_PROJECT": "relay-proof",
+            "FACTORY_PROVIDER_DB": str(database),
+            "FACTORY_PROVIDER_PRODUCT_ID": f"relay-proof:{release}",
+            "FACTORY_RELEASE_SHA": release,
+        }
+        heartbeat, started = self.spawn()
+        base_run = attempt_id[:-4]
+        wrapper = self.runs / f"{base_run}.wrapper"
+        wrapper.write_text(
+            f"run_id={base_run}\nwrapper_pid=99999998\n"
+            f"wrapper_process_start=stale\nheartbeat_pid={heartbeat.pid}\n"
+            f"heartbeat_pgid={heartbeat.pid}\nheartbeat_process_start={started}\n"
+        )
+        with mock.patch.dict(os.environ, environment, clear=False), \
+                self.assertRaisesRegex(CANCEL.CancelError, "run evidence"):
+            CANCEL.calculate(
+                self.root, "T-1", attempt_id, "operator_requested", None,
+            )
+        wrapper.unlink()
+        heartbeat.terminate()
+        heartbeat.wait(timeout=5)
+        stale = self.runs / f"{attempt_id}.wrapper"
+        stale.write_text(
+            f"run_id={attempt_id}\nwrapper_pid=99999998\n"
+            "wrapper_process_start=stale\nheartbeat_pid=99999997\n"
+            "heartbeat_pgid=99999997\nheartbeat_process_start=stale\n"
+        )
+        with mock.patch.dict(os.environ, environment, clear=False), \
+                self.assertRaisesRegex(CANCEL.CancelError, "run evidence"):
+            CANCEL.calculate(
+                self.root, "T-1", attempt_id, "operator_requested", None,
+            )
+        status = self.provider_command(
+            database, "status", "--attempt-id", attempt_id,
+        )["attempts"][0]
+        self.assertEqual(status["state"], "reserved")
+        self.assertIsNone(status["charge_micro_usd"])
+
+    def test_provider_only_attempt_refuses_account_lease_until_supported_release(self):
+        database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"
+        account_database = database.with_name("cursor-account.sqlite3")
+        release = "b" * 40
+        attempt_id = "1787640905-99999997-cli"
+        self.submitted_provider_attempt(
+            database, attempt_id=attempt_id, submit=False,
+            product_id=f"relay-proof:{release}",
+        )
+        owner_start = " ".join(subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(os.getpid())], text=True,
+        ).split())
+        lease_id = f"{attempt_id}-account"
+        owner = [
+            "--lease-id", lease_id, "--owner-pid", str(os.getpid()),
+            "--owner-pgid", str(os.getpgrp()), "--owner-start", owner_start,
+        ]
+        admission = self.provider_command(
+            database, "--account-db", str(account_database), "account-acquire",
+            *owner, "--account-route", "cursor", "--trust-scope",
+            "qualification-candidate", "--policy", str(database.with_name("policy.json")),
+            "--wait-seconds", "2",
+        )
+        self.assertTrue(admission["admitted"])
+        environment = {
+            "FACTORY_PROJECT": "relay-proof",
+            "FACTORY_PROVIDER_DB": str(database),
+            "FACTORY_CURSOR_ACCOUNT_DB": str(account_database),
+            "FACTORY_PROVIDER_PRODUCT_ID": f"relay-proof:{release}",
+            "FACTORY_RELEASE_SHA": release,
+        }
+        with mock.patch.dict(os.environ, environment, clear=False), \
+                self.assertRaisesRegex(CANCEL.CancelError, "account lease"):
+            CANCEL.calculate(
+                self.root, "T-1", attempt_id, "operator_requested", None,
+            )
+        released = self.provider_command(
+            database, "--account-db", str(account_database), "account-release", *owner,
+        )
+        self.assertTrue(released["released"])
+        with mock.patch.dict(os.environ, environment, clear=False):
+            plan = CANCEL.calculate(
+                self.root, "T-1", attempt_id, "operator_requested", None,
+            )
+            CANCEL.apply_plan(self.root, plan, 1)
+        self.assertEqual(
+            self.provider_command(
+                database, "--account-db", str(account_database), "account-status",
+            )["leases"],
+            [],
+        )
+
+    def test_provider_only_attempt_refuses_live_foreign_and_changed_state(self):
+        database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"
+        release = "e" * 40
+        process, _started = self.spawn()
+        attempt_id = f"1787640905-{process.pid}-cli"
+        self.submitted_provider_attempt(
+            database, attempt_id=attempt_id, submit=False,
+            product_id=f"relay-proof:{release}",
+        )
+        environment = {
+            "FACTORY_PROJECT": "relay-proof",
+            "FACTORY_PROVIDER_DB": str(database),
+            "FACTORY_PROVIDER_PRODUCT_ID": f"relay-proof:{release}",
+            "FACTORY_RELEASE_SHA": release,
+        }
+        with mock.patch.dict(os.environ, environment, clear=False), \
+                self.assertRaisesRegex(CANCEL.CancelError, "still live"):
+            CANCEL.calculate(
+                self.root, "T-1", attempt_id, "operator_requested", None,
+            )
+        process.terminate()
+        process.wait(timeout=5)
+        with mock.patch.dict(os.environ, {
+            **environment,
+            "FACTORY_PROVIDER_PRODUCT_ID": f"foreign:{release}",
+            "FACTORY_PROJECT": "foreign",
+        }, clear=False), self.assertRaisesRegex(CANCEL.CancelError, "exact pre-GO"):
+            CANCEL.calculate(
+                self.root, "T-1", attempt_id, "operator_requested", None,
+            )
+        with mock.patch.dict(os.environ, environment, clear=False):
+            plan = CANCEL.calculate(
+                self.root, "T-1", attempt_id, "operator_requested", None,
+            )
+        before = self.provider_command(
+            database, "status", "--attempt-id", attempt_id,
+        )["attempts"][0]
+        self.provider_command(
+            database, "mark-go", "--operation-id", "provider-only-drift",
+            "--attempt-id", attempt_id,
+            "--expected-version", str(before["version"]),
+        )
+        with mock.patch.dict(os.environ, environment, clear=False), \
+                self.assertRaisesRegex(CANCEL.CancelError, "does not match"):
+            CANCEL.apply_plan(self.root, plan, 1)
+
     def test_cross_release_receipt_replay_repairs_legacy_provider_terminal(self):
         database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"
         source_sha = "d" * 40
