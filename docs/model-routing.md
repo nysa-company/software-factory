@@ -161,7 +161,9 @@ the first submitted provider failure, in either profile-authorized route
 direction. It does not write an operator receipt into the immutable product
 checkout. Recovery considers only the approval bound to the requested failed
 run; older approvals for other runs are inert, while replay of a superseded
-same-run approval still fails closed. A classified provider spend limit records
+same-run approval still fails closed. A direct preview for a superseded run
+names the latest unique run, its manifest, and the exact safe preview command;
+automatic controller refusals keep that detail sanitized. A classified provider spend limit records
 `credits_exhausted` and latches the cohort only if fallback cannot complete.
 
 ## Family-separation rules
