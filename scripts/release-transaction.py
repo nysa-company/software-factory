@@ -4070,6 +4070,26 @@ def qualification_fallback(
         ) from error
 
 
+def qualification_runtime_ledger_digest(
+    transaction: Path, product: Path, ledger: Path,
+) -> str:
+    try:
+        result = subprocess.run([
+            sys.executable, "-I", "-S", str(transaction / "scripts/ledger-view.py"),
+            "print", "--factory-root", str(product),
+            "--runtime-ledger", str(ledger),
+        ], capture_output=True, check=False, timeout=60,
+            env={"PATH": "/usr/bin:/bin"})
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ReleaseError("qualification runtime ledger projection failed") from error
+    if result.returncode:
+        raise ReleaseError("qualification runtime ledger projection failed")
+    live = secure_regular_bytes(ledger, "qualification runtime ledger")
+    if result.stdout != live:
+        raise ReleaseError("qualification runtime ledger is not canonical")
+    return hashlib.sha256(live).hexdigest()
+
+
 def qualification_basis(
     project: str, root: Path, product: Path, repo: Path, sha: str,
     transaction: Path | None = None,
@@ -4114,6 +4134,13 @@ def qualification_basis(
         )
     except (OSError, ValueError) as error:
         raise ReleaseError(str(error)) from error
+    runtime_ledger_sha256 = (
+        qualification_runtime_ledger_digest(
+            transaction, product, source["runtime_ledger_path"],
+        )
+        if source["active"]["kit_sha"] == sha
+        else file_digest(source["runtime_ledger_path"])
+    )
     active_path = root / f"projects/{project}/active.json"
     environment_path = root / "environment.json"
     receipt_id = source["active"].get("receipt_id", "")
@@ -4149,7 +4176,7 @@ def qualification_basis(
         "manifest_sha256": file_digest(product / "factory/QUALIFICATION.json"),
         "operator_identities": {
             "map_sha256": file_digest(source["operator_map_path"]),
-            "runtime_ledger_sha256": file_digest(source["runtime_ledger_path"]),
+            "runtime_ledger_sha256": runtime_ledger_sha256,
         },
         "previous_receipt": {"path": str(receipt_path), "sha256": file_digest(receipt_path)},
         "product_origin": product_origin,
@@ -4366,6 +4393,8 @@ def qualification_basis_matches(
     previous = expected.get("active")
     environment = current.get("environment")
     previous_environment = expected.get("environment")
+    operators = current.get("operator_identities")
+    previous_operators = expected.get("operator_identities")
     return bool(
         isinstance(active, dict) and isinstance(previous, dict)
         and set(active) == set(previous) == {"generation", "kit_sha", "path", "sha256"}
@@ -4378,11 +4407,17 @@ def qualification_basis_matches(
         and active["path"] == previous["path"]
         and isinstance(environment, dict) and isinstance(previous_environment, dict)
         and environment.get("path") == previous_environment.get("path")
+        and isinstance(operators, dict) and isinstance(previous_operators, dict)
+        and set(operators) == set(previous_operators) == {
+            "map_sha256", "runtime_ledger_sha256",
+        }
+        and operators["map_sha256"] == previous_operators["map_sha256"]
         and all(
             current[key] == expected[key]
             for key in current
             if key not in {
-                "active", "authority_sha256", "environment", "previous_receipt",
+                "active", "authority_sha256", "environment", "operator_identities",
+                "previous_receipt",
             }
         )
     )
@@ -4606,10 +4641,18 @@ def apply_qualification_plan(
                 f"qualification migration inputs changed after preview: {changed}"
             )
         if repair_supersession:
-            if (
-                repair_sha is None or current != plan["identity"]
-                or cursor > QUALIFICATION_PHASES.index("provider_cli_ready")
-            ):
+            before_publication = (
+                current == plan["identity"]
+                and cursor <= QUALIFICATION_PHASES.index("provider_cli_ready")
+            )
+            after_publication = (
+                current != plan["identity"] and target_active
+                and cursor in {
+                    QUALIFICATION_PHASES.index("environment_upgraded"),
+                    QUALIFICATION_PHASES.index("doctor_ready"),
+                }
+            )
+            if repair_sha is None or not (before_publication or after_publication):
                 raise ReleaseError("qualification migration repair helper changed")
             prior["repair_sha"] = repair_sha
             atomic_json(journal_path, signed_journal(prior))
