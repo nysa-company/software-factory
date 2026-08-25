@@ -25,8 +25,16 @@ qualification preparation registers its exact physical launcher separately;
 production and qualification may share a project slug. The human CLI stores an
 opaque target choice, obtains labels and ticket fields only through that exact
 launcher's validated workflow snapshot, and delegates all mutations back to the
-launcher. Missing or stale launcher paths are never rediscovered from an active
-record.
+launcher. Qualification target trust revalidates the owner-only marker, active
+record, receipt digest, exact project/release binding, and complete sealed Git
+tree plus its clean exact product HEAD/tree before and after executing that
+launcher; the release is exact-mode read-only and cannot contain escaping
+links, and the activation binds the exact product origin plus authenticated
+authority, operator, provider, and runtime paths. Qualification uses one stable
+project-derived target ID. Registration is
+serialized and directory-FD anchored, so concurrent or legacy replacement
+leaves one complete target without lock residue. Missing, stale, or changed
+launcher paths are never rediscovered from an active record.
 
 - **`factory/PROJECT.env`:** product name, exact `GH_REPO`, protected test paths, worktree location, ticket branch prefix, contract-1.3 `DONE_REQUIRED_CHECKS` (a unique comma-separated list of exact post-merge status/check names), required `AUTO_MERGE_METHOD` (`squash`, `merge`, or `rebase`), optional repository-contained `PREVIEW_PREFLIGHT_SCRIPT`, and optional fail-closed `NONVISUAL_PATHS` directory prefixes.
 

@@ -3822,7 +3822,7 @@ def register_human_target(
     cli = release / "scripts/factory-cli.py"
     if not cli.exists():
         return
-    target = f"qualification-{hashlib.sha256(str(root).encode()).hexdigest()[:24]}"
+    target = f"qualification-{hashlib.sha256(project.encode()).hexdigest()[:24]}"
     result = subprocess.run(
         ["/usr/bin/python3", "-I", "-S", str(cli), "register",
          target, str(launcher), project],

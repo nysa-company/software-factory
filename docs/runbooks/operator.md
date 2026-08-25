@@ -454,8 +454,14 @@ transaction diagnosis.
 For routine work, run `factory use` once, then use bare `factory` to select the
 next approval or Ready action by ticket title. `factory backlog` prints the
 priority-ordered IDs and titles, and `factory doctor` keeps the established
-diagnostic name. The long launcher and `factory-kit.sh` forms below remain the
-recovery and automation interface.
+diagnostic name. A failed concise Doctor result names the first bounded failed
+checks and reason codes, says not to continue mutations, and prints the exact
+sealed `doctor --json` evidence command. Malformed workflow or qualification
+results refuse without a traceback, and arbitrary result objects are never
+re-emitted as diagnostics. When receipt validation fails after an action, the
+CLI says the mutation outcome is unknown: do not repeat it; run `factory doctor`
+and inspect the workflow first. The long launcher and `factory-kit.sh` forms
+below remain the recovery and automation interface.
 
 - Notice: under contract 1.3+, after the bundle is attested and Awaiting Approval, make the one business decision by reviewing the exact bundle yourself and running
   `bash scripts/factory-kit.sh operator approve --project <project> --product <absolute-product-path> --ticket T-123`.
