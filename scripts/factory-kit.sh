@@ -242,7 +242,7 @@ Usage:
   $PROGRAM release resume --project SLUG --sha FULL_SHA --approved-by ID
   $PROGRAM release abort  --project SLUG --sha FULL_SHA --approved-by ID
   $PROGRAM qualification upgrade --project SLUG --root QUALIFICATION_ROOT --product PRODUCT_REPO --repo KIT_REPO --sha FULL_SHA --runtime-bin NODE_BIN_DIR --operator-id ID
-  $PROGRAM qualification resume --project SLUG --sha FULL_SHA --approved-by ID
+  $PROGRAM qualification resume --project SLUG --sha FULL_SHA --approved-by ID [--repair-sha FULL_SHA]
   $PROGRAM qualification recover-plan --project SLUG --root QUALIFICATION_ROOT --product PRODUCT_REPO --repo KIT_REPO --sha FULL_SHA --operator-id ID --ticket T-NNN --failed-run RUN
   $PROGRAM qualification recover-apply --project SLUG --root QUALIFICATION_ROOT --product PRODUCT_REPO --repo KIT_REPO --sha FULL_SHA --operator-id ID --ticket T-NNN --failed-run RUN --approve-hash HASH
 
@@ -5495,17 +5495,23 @@ cmd_qualification_upgrade() {
 }
 
 cmd_qualification_resume() {
-  local project="$1" sha="$2" approver="$3" values release helper
+  local project="$1" sha="$2" approver="$3" repair_sha="$4" values release helper
   validate_sha "$sha"
   values="$(verify_release_from_manifest "$sha")"
+  [[ -z "$repair_sha" ]] || validate_sha "$repair_sha"
+  [[ -z "$repair_sha" ]] || values="$(verify_release_from_manifest "$repair_sha")"
   release="$(printf '%s' "$values" | awk -F'\t' '{print $3}')"
   helper="$release/scripts/release-transaction.py"
   [[ -f "$helper" && ! -L "$helper" ]] || die "sealed qualification transaction helper is missing"
   QUALIFICATION_TRANSACTION_ROOT="$release"
   QUALIFICATION_INSTALL_REPO=""
   QUALIFICATION_INSTALL_AUTH_DESCRIPTOR=""
-  run_qualification_transaction "$helper" --kits-root "$KITS_ROOT" qualification-resume \
-    --project "$project" --sha "$sha" --approved-by "$approver"
+  local -a arguments=(
+    --kits-root "$KITS_ROOT" qualification-resume --project "$project"
+    --sha "$sha" --approved-by "$approver"
+  )
+  [[ -z "$repair_sha" ]] || arguments+=(--repair-sha "$repair_sha")
+  run_qualification_transaction "$helper" "${arguments[@]}"
 }
 
 cmd_qualification_recover() {
@@ -5563,6 +5569,7 @@ FAILED_RUN=""
 REASON=""
 EXPIRES_MINUTES=""
 QUALIFICATION_ROOT=""
+REPAIR_SHA=""
 SKIP_OPTIONAL_TESTS=0
 JSON=0
 POSITIONALS=()
@@ -5576,6 +5583,7 @@ while [[ $# -gt 0 ]]; do
     --project|--slug) [[ $# -ge 2 ]] || die "$1 requires a value"; PROJECT="$2"; shift 2 ;;
     --product|--product-repo) [[ $# -ge 2 ]] || die "$1 requires a value"; PRODUCT="$2"; shift 2 ;;
     --root) [[ $# -ge 2 ]] || die "$1 requires a value"; QUALIFICATION_ROOT="$2"; shift 2 ;;
+    --repair-sha) [[ $# -ge 2 ]] || die "$1 requires a value"; REPAIR_SHA="$2"; shift 2 ;;
     --receipt) [[ $# -ge 2 ]] || die "$1 requires a value"; RECEIPT="$2"; shift 2 ;;
     --ticket)
       [[ $# -ge 2 ]] || die "$1 requires a value"
@@ -5619,6 +5627,9 @@ if [[ "$COMMAND" != "release" && -n "$PROFILE" ]] ||
 fi
 if [[ "$COMMAND" != "qualification" && -n "$QUALIFICATION_ROOT" ]]; then
   die "--root is only valid for qualification operations"
+fi
+if [[ "$COMMAND" != "qualification" && -n "$REPAIR_SHA" ]]; then
+  die "--repair-sha is only valid for qualification operations"
 fi
 if [[ "$SKIP_OPTIONAL_TESTS" -eq 1 && "$COMMAND" != "certify" && "$COMMAND" != "release" ]]; then
   die "--skip-optional-tests is only valid for certify or release setup"
@@ -5787,7 +5798,7 @@ case "$COMMAND" in
     if [[ "$ACTION" == "upgrade" ]]; then
       [[ ${#POSITIONALS[@]} -eq 1 && -n "$PROJECT" && -n "$QUALIFICATION_ROOT" &&
          -n "$PRODUCT" && -n "$SHA" && -n "$RUNTIME_BIN" && -n "$OPERATOR_ID" &&
-         -z "$APPROVE_HASH$APPROVED_BY$PROFILE$RECEIPT$TICKET$CAPACITY$ORIGIN_OVERRIDE" &&
+         -z "$APPROVE_HASH$APPROVED_BY$PROFILE$RECEIPT$TICKET$CAPACITY$ORIGIN_OVERRIDE$REPAIR_SHA" &&
          ${#TICKETS[@]} -eq 0 && ${#TICKET_WORKDIRS[@]} -eq 0 && "$JSON" -eq 0 ]] ||
         { usage >&2; exit 2; }
       cmd_qualification_upgrade "$PROJECT" "$QUALIFICATION_ROOT" "$PRODUCT" "$REPO" \
@@ -5799,11 +5810,12 @@ case "$COMMAND" in
          "$REPO" == "$SCRIPT_ROOT" && ${#TICKETS[@]} -eq 0 &&
          ${#TICKET_WORKDIRS[@]} -eq 0 && "$JSON" -eq 0 ]] ||
         { usage >&2; exit 2; }
-      cmd_qualification_resume "$PROJECT" "$SHA" "$APPROVED_BY"
+      cmd_qualification_resume "$PROJECT" "$SHA" "$APPROVED_BY" "$REPAIR_SHA"
     elif [[ "$ACTION" == "recover-plan" || "$ACTION" == "recover-apply" ]]; then
       [[ ${#POSITIONALS[@]} -eq 1 && -n "$PROJECT" && -n "$QUALIFICATION_ROOT" &&
          -n "$PRODUCT" && -n "$SHA" && -n "$OPERATOR_ID" && -n "$TICKET" &&
          -n "$FAILED_RUN" && -z "$RUNTIME_BIN$APPROVED_BY$PROFILE$RECEIPT$CAPACITY$ORIGIN_OVERRIDE" &&
+         -z "$REPAIR_SHA" &&
          -z "$PREVIEW_HASH$REASON$EXPIRES_MINUTES$CLAUDE_BIN$CODEX_BIN$CURSOR_BIN$STAGE$PRIORITY_NAME" &&
          ${#TICKETS[@]} -eq 1 && ${#TICKET_WORKDIRS[@]} -eq 0 && "$JSON" -eq 0 &&
          "$SKIP_OPTIONAL_TESTS" -eq 0 ]] || { usage >&2; exit 2; }

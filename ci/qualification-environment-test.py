@@ -4443,16 +4443,11 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertLessEqual(receipt["total_duration_ms"], 60_000)
         self.assertEqual(active["kit_sha"], candidate)
         self.assertEqual(active["generation"], 2)
-        journal = RELEASE.read_qualification_journal(
-            RELEASE.qualification_state(kits.resolve(), "relay", candidate)
-            / "journal.json",
-            json.loads((
-                RELEASE.qualification_state(kits.resolve(), "relay", candidate)
-                / "latest.json"
-            ).read_text()),
-        )
-        self.assertEqual((journal["status"], journal["phase"]), ("pass", "complete"))
-        self.assertNotIn(str(install_repo), json.dumps(journal, sort_keys=True))
+        migration = RELEASE.qualification_state(kits.resolve(), "relay", candidate)
+        self.assertRegex(receipt["journal_sha256"], r"^[0-9a-f]{64}$")
+        self.assertFalse((migration / "journal.json").exists())
+        self.assertFalse((migration / ".migration.lock").exists())
+        self.assertNotIn(str(install_repo), json.dumps(receipt, sort_keys=True))
         self.assertFalse(factory_config_marker.exists())
         self.assertFalse(descriptor.exists())
         self.assertFalse(auth_file.exists())

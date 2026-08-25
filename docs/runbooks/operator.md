@@ -758,6 +758,19 @@ journal resumes child transactions after interruption. A replay
 returns the original completion receipt without advancing the generation or
 rewriting lane state. Any changed plan, checkout, authorization, runtime,
 provider receipt, fallback evidence, active record, or environment refuses.
+If an older target release stranded an authenticated in-progress journal, an
+installed merged successor may supply only the repaired transaction helper:
+
+```bash
+bash scripts/factory-kit.sh qualification resume \
+  --project <project> --sha <stranded-target> \
+  --approved-by <operator-id> --repair-sha <merged-successor>
+```
+
+This keeps the original target plan and release authoritative, binds the repair
+helper once in the signed journal and completion receipt, and refuses a missing,
+changed, unsealed, or same-release helper. Do not use it without an existing
+authenticated in-progress journal.
 The old separate runtime-pin, provider-pin, environment `--upgrade`, and Doctor
 commands are recovery diagnostics only; do not use them as the normal migration
 procedure or hand-edit their authenticated state.

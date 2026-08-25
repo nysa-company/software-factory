@@ -47,6 +47,10 @@ QUALIFICATION_RECOVERY_RESULT_SCHEMA = (
     "nysa.software-factory.qualification-attempt-recovery-result/v1"
 )
 QUALIFICATION_BUDGET_MS = 60_000
+QUALIFICATION_PHASES = (
+    "validated", "runtime_ready", "provider_cli_ready",
+    "environment_upgraded", "doctor_ready", "complete",
+)
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 SAFE_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
@@ -3983,6 +3987,7 @@ class QualificationTimer:
     ):
         self.started = time.monotonic() if started is None else started
         self.timings = list(prior or [])
+        self.current_timings: list[dict[str, Any]] = []
         self.prior_ms = (
             prior_ms if prior_ms is not None
             else sum(item["duration_ms"] for item in self.timings)
@@ -3993,10 +3998,12 @@ class QualificationTimer:
         try:
             return operation()
         finally:
-            self.timings.append({
+            timing = {
                 "duration_ms": max(0, round((time.monotonic() - started) * 1000)),
                 "phase": name,
-            })
+            }
+            self.timings.append(timing)
+            self.current_timings.append(timing)
             self.check()
 
     def elapsed_ms(self) -> int:
@@ -4007,7 +4014,10 @@ class QualificationTimer:
 
     def check(self) -> None:
         if self.elapsed_ms() > QUALIFICATION_BUDGET_MS:
-            slowest = max(self.timings, key=lambda item: item["duration_ms"], default={})
+            slowest = max(
+                self.current_timings or self.timings,
+                key=lambda item: item["duration_ms"], default={},
+            )
             raise ReleaseError(
                 "qualification migration exceeded 60 seconds"
                 + (f" during {slowest.get('phase')}" if slowest else "")
@@ -4060,6 +4070,7 @@ def qualification_fallback(
 
 def qualification_basis(
     project: str, root: Path, product: Path, repo: Path, sha: str,
+    transaction: Path | None = None,
 ) -> tuple[dict[str, Any], Any]:
     if not PROJECT.fullmatch(project) or not SHA.fullmatch(sha):
         raise ReleaseError("qualification migration identity is invalid")
@@ -4086,15 +4097,16 @@ def qualification_basis(
         raise ReleaseError("qualification migration inputs are not exact protected main")
     if secure_regular_bytes(product / "factory/KIT_PIN", "product KIT_PIN") != (sha + "\n").encode():
         raise ReleaseError("product pin does not match qualification SHA")
-    module = qualification_module(TRANSACTION_ROOT)
+    transaction = transaction or TRANSACTION_ROOT
+    module = qualification_module(transaction)
     try:
         contract_version = json.loads(
-            (TRANSACTION_ROOT / "factory-contract.json").read_text(encoding="utf-8")
+            (transaction / "factory-contract.json").read_text(encoding="utf-8")
         ).get("contract_version")
         manifest = module.qualification_manifest(product, sha)
         module.validate_selected_contracts(product, manifest)
         source = module.validate_upgrade_source(
-            root, project, TRANSACTION_ROOT, product, sha, contract_version, manifest,
+            root, project, transaction, product, sha, contract_version, manifest,
         )
     except (OSError, ValueError) as error:
         raise ReleaseError(str(error)) from error
@@ -4410,11 +4422,29 @@ def read_qualification_journal(
     value = safe_state(path, "qualification migration journal")
     unsigned = {key: item for key, item in value.items() if key != "record_sha256"}
     timings = value.get("timings")
+    events = value.get("events")
     if (
         value.get("schema") != QUALIFICATION_JOURNAL_SCHEMA
         or value.get("plan") != plan
-        or ("record_sha256" in value and value["record_sha256"] != digest(unsigned))
-        or not isinstance(value.get("events"), list)
+        or value.get("record_sha256") != digest(unsigned)
+        or not isinstance(events, list) or not events
+        or any(
+            not isinstance(item, dict)
+            or set(item) != {"observed_epoch_ms", "phase"}
+            or not isinstance(item["observed_epoch_ms"], int)
+            or isinstance(item["observed_epoch_ms"], bool)
+            or item["observed_epoch_ms"] < 1
+            or item["phase"] not in QUALIFICATION_PHASES
+            for item in events
+        )
+        or value.get("phase") != events[-1]["phase"]
+        or value.get("status") != (
+            "pass" if events[-1]["phase"] == "complete" else "in-progress"
+        )
+        or (
+            "repair_sha" in value
+            and not SHA.fullmatch(str(value.get("repair_sha", "")))
+        )
         or not isinstance(timings, list)
         or any(
             not isinstance(item, dict) or set(item) != {"duration_ms", "phase"}
@@ -4455,6 +4485,7 @@ def qualification_fail_after(phase: str) -> None:
 
 def qualification_completion(
     path: Path, plan: dict[str, Any] | None = None,
+    repair_sha: str | None = None,
 ) -> dict[str, Any]:
     receipt = safe_state(path, "qualification migration completion")
     unsigned = dict(receipt)
@@ -4470,6 +4501,16 @@ def qualification_completion(
         or not isinstance(receipt.get("slowest_phase"), dict)
         or not isinstance(receipt.get("generation"), int)
         or isinstance(receipt.get("generation"), bool)
+        or (
+            "repair_sha" in receipt
+            and not SHA.fullmatch(str(receipt.get("repair_sha", "")))
+        )
+        or "repair_sha" in receipt and "journal_sha256" not in receipt
+        or (
+            "journal_sha256" in receipt
+            and not DIGEST.fullmatch(str(receipt.get("journal_sha256", "")))
+        )
+        or repair_sha is not None and receipt.get("repair_sha") != repair_sha
         or plan is not None and (
             receipt.get("approval_sha256") != plan["approval_sha256"]
             or receipt.get("factory_sha") != plan["request"]["sha"]
@@ -4482,7 +4523,7 @@ def qualification_completion(
 
 def apply_qualification_plan(
     plan: dict[str, Any], kits_root: Path, approved_by: str | None,
-    *, started: float | None = None,
+    *, started: float | None = None, repair_sha: str | None = None,
 ) -> dict[str, Any]:
     validate_qualification_plan(plan)
     request = plan["request"]
@@ -4493,23 +4534,30 @@ def apply_qualification_plan(
         raise ReleaseError("qualification migration operator changed")
     state = qualification_state(kits_root, request["project"], request["sha"])
     completion = state / "completion.json"
-    if completion.exists() or completion.is_symlink():
-        return qualification_completion(completion, plan)
     journal_path = state / "journal.json"
+    lock_path = state / ".migration.lock"
     lock = os.open(
-        state / ".migration.lock", os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+        lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
         0o600,
     )
+    completed = False
     try:
         info = os.fstat(lock)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077:
             raise ReleaseError("qualification migration lock is unsafe")
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if completion.exists():
-            return qualification_completion(completion, plan)
-        timings = plan["preview_timings"]
+        if completion.exists() or completion.is_symlink():
+            receipt = qualification_completion(completion, plan)
+            completed = True
+            if repair_sha is not None:
+                qualification_completion(completion, plan, repair_sha)
+            return receipt
+        timings = list(plan["preview_timings"])
         prior_ms = plan["preview_elapsed_ms"]
+        cursor = -1
+        restarting = False
         if journal_path.exists() or journal_path.is_symlink():
+            restarting = True
             prior = read_qualification_journal(journal_path, plan)
             prior_timings = prior.get("timings")
             if (
@@ -4517,17 +4565,29 @@ def apply_qualification_plan(
                 or prior_timings[:len(timings)] != timings
             ):
                 raise ReleaseError("qualification migration journal is invalid")
-            timings = prior_timings
-            prior_ms += sum(
-                item["duration_ms"] for item in timings[len(plan["preview_timings"]):]
+            timings = list(prior_timings)
+            cursor = max(
+                QUALIFICATION_PHASES.index(item["phase"])
+                for item in prior["events"]
             )
+            recorded_repair = prior.get("repair_sha")
+            if recorded_repair not in {None, repair_sha}:
+                raise ReleaseError("qualification migration repair helper changed")
+            if repair_sha is not None and recorded_repair is None:
+                prior["repair_sha"] = repair_sha
+                atomic_json(journal_path, signed_journal(prior))
+            prior_ms = 0
         timer = QualificationTimer(timings, prior_ms, started)
+        if not restarting:
+            timer.current_timings = list(timings)
         timer.check()
+
+        sealed_release = kits_root / "releases" / request["sha"]
 
         def basis() -> tuple[dict[str, Any], Any]:
             return qualification_basis(
                 request["project"], Path(request["root"]), Path(request["product"]),
-                Path(request["repo"]), request["sha"],
+                Path(request["repo"]), request["sha"], sealed_release,
             )
 
         current, module = timer.phase("revalidate", basis)
@@ -4541,37 +4601,40 @@ def apply_qualification_plan(
             raise ReleaseError(
                 f"qualification migration inputs changed after preview: {changed}"
             )
-        qualification_journal_update(journal_path, plan, "validated", timer.timings)
+        if cursor < QUALIFICATION_PHASES.index("validated"):
+            qualification_journal_update(journal_path, plan, "validated", timer.timings)
+            cursor = QUALIFICATION_PHASES.index("validated")
 
         runtime = plan["children"]["runtime"]
-        sealed_release = kits_root / "releases" / request["sha"]
-        if runtime["action"] == "apply":
-            runtime_plan = state / "runtime-plan.json"
-            if runtime_plan.exists() or runtime_plan.is_symlink():
-                if safe_state(runtime_plan, "qualification runtime plan") != runtime["plan"]:
-                    raise ReleaseError("qualification runtime plan changed")
+        if cursor < QUALIFICATION_PHASES.index("runtime_ready"):
+            if runtime["action"] == "apply":
+                runtime_plan = state / "runtime-plan.json"
+                if runtime_plan.exists() or runtime_plan.is_symlink():
+                    if safe_state(runtime_plan, "qualification runtime plan") != runtime["plan"]:
+                        raise ReleaseError("qualification runtime plan changed")
+                else:
+                    atomic_json(runtime_plan, runtime["plan"])
+                timer.phase("runtime", lambda: run_json([
+                    sys.executable, "-I", "-S",
+                    str(sealed_release / "scripts/owner-runtime-pin.py"),
+                    "apply", "--plan", str(runtime_plan), "--approve-hash",
+                    runtime["plan"]["approval_sha256"],
+                ], "qualification runtime apply", environment=qualification_command_environment(kits_root),
+                    timeout=timer.remaining_seconds()))
             else:
-                atomic_json(runtime_plan, runtime["plan"])
-            timer.phase("runtime", lambda: run_json([
-                sys.executable, "-I", "-S",
-                str(sealed_release / "scripts/owner-runtime-pin.py"),
-                "apply", "--plan", str(runtime_plan), "--approve-hash",
-                runtime["plan"]["approval_sha256"],
-            ], "qualification runtime apply", environment=qualification_command_environment(kits_root),
-                timeout=timer.remaining_seconds()))
-        else:
-            timer.phase("runtime", lambda: run_json([
-                sys.executable, "-I", "-S",
-                str(sealed_release / "scripts/owner-runtime-pin.py"),
-                "check", "--journal", str(
-                    Path(request["root"]) / "project-runtimes"
-                    / request["project"] / "runtime-pin-journal.json"
-                ),
-            ], "qualification runtime replay", environment=qualification_command_environment(
-                kits_root,
-            ), timeout=timer.remaining_seconds()))
-        qualification_journal_update(journal_path, plan, "runtime_ready", timer.timings)
-        qualification_fail_after("runtime")
+                timer.phase("runtime", lambda: run_json([
+                    sys.executable, "-I", "-S",
+                    str(sealed_release / "scripts/owner-runtime-pin.py"),
+                    "check", "--journal", str(
+                        Path(request["root"]) / "project-runtimes"
+                        / request["project"] / "runtime-pin-journal.json"
+                    ),
+                ], "qualification runtime replay", environment=qualification_command_environment(
+                    kits_root,
+                ), timeout=timer.remaining_seconds()))
+            qualification_journal_update(journal_path, plan, "runtime_ready", timer.timings)
+            cursor = QUALIFICATION_PHASES.index("runtime_ready")
+            qualification_fail_after("runtime")
 
         provider = plan["children"]["provider_cli"]
 
@@ -4601,9 +4664,13 @@ def apply_qualification_plan(
             if provider["action"] == "reuse" and evidence != provider["evidence"]:
                 raise ReleaseError("qualification provider CLI evidence changed")
 
-        timer.phase("provider_cli", prepare_provider)
-        qualification_journal_update(journal_path, plan, "provider_cli_ready", timer.timings)
-        qualification_fail_after("provider_cli")
+        if cursor < QUALIFICATION_PHASES.index("provider_cli_ready"):
+            timer.phase("provider_cli", prepare_provider)
+            qualification_journal_update(
+                journal_path, plan, "provider_cli_ready", timer.timings,
+            )
+            cursor = QUALIFICATION_PHASES.index("provider_cli_ready")
+            qualification_fail_after("provider_cli")
 
         current, module = timer.phase("preapply_revalidate", basis)
         target_active = current["active"]["kit_sha"] == request["sha"]
@@ -4613,7 +4680,7 @@ def apply_qualification_plan(
             fallback, fallback_sha = timer.phase(
                 "fallback_readiness",
                 lambda: qualification_fallback(
-                    module, TRANSACTION_ROOT, Path(request["root"]),
+                    module, sealed_release, Path(request["root"]),
                     request["project"], Path(request["product"]),
                     state / "fallback-scratch", timer.remaining_seconds(),
                 ),
@@ -4646,10 +4713,24 @@ def apply_qualification_plan(
                 )
             return value
 
-        upgraded = timer.phase("environment_upgrade", upgrade)
-        qualification_journal_update(journal_path, plan, "environment_upgraded", timer.timings)
-        qualification_fail_after("environment_upgrade")
-        launcher = Path(upgraded["launcher"])
+        if cursor < QUALIFICATION_PHASES.index("environment_upgraded"):
+            upgraded = timer.phase("environment_upgrade", upgrade)
+            qualification_journal_update(
+                journal_path, plan, "environment_upgraded", timer.timings,
+            )
+            cursor = QUALIFICATION_PHASES.index("environment_upgraded")
+            qualification_fail_after("environment_upgrade")
+            launcher = Path(upgraded["launcher"])
+        else:
+            if not target_active:
+                raise ReleaseError("qualification migration journal exceeds live activation")
+            launcher = (
+                Path(request["root"]) / "releases" / request["sha"]
+                / "scripts/factory-launch"
+            )
+            secure_regular_bytes(
+                launcher, "qualification sealed launcher", executable=True,
+            )
 
         def doctor() -> dict[str, Any]:
             value = run_json(
@@ -4670,7 +4751,9 @@ def apply_qualification_plan(
             return value
 
         doctor_result = timer.phase("doctor", doctor)
-        qualification_journal_update(journal_path, plan, "doctor_ready", timer.timings)
+        final_journal = qualification_journal_update(
+            journal_path, plan, "doctor_ready", timer.timings,
+        )
         qualification_fail_after("doctor")
         final_basis, final_module = timer.phase("completion_validation", basis)
         if not qualification_basis_matches(
@@ -4683,7 +4766,7 @@ def apply_qualification_plan(
             raise ReleaseError("qualification migration changed provider state")
         final_module.provider_drained(final_module.qualification_lane(Path(request["root"]), request["project"]))
         timer.check()
-        slowest = max(timer.timings, key=lambda item: item["duration_ms"])
+        slowest = max(timer.current_timings, key=lambda item: item["duration_ms"])
         unsigned = {
             "active_sha256": final_basis["active"]["sha256"],
             "approval_sha256": plan["approval_sha256"],
@@ -4698,12 +4781,21 @@ def apply_qualification_plan(
             "timings": timer.timings,
             "total_duration_ms": timer.elapsed_ms(),
         }
+        if repair_sha is not None:
+            unsigned["repair_sha"] = repair_sha
+        unsigned["journal_sha256"] = final_journal["record_sha256"]
         receipt = {**unsigned, "completion_sha256": digest(unsigned)}
         atomic_json(completion, receipt)
-        qualification_journal_update(journal_path, plan, "complete", timer.timings)
+        completed = True
         return receipt
     finally:
         os.close(lock)
+        if completed:
+            for path in (journal_path, lock_path):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
 
 
 def _qualification_upgrade_locked(args: argparse.Namespace) -> dict[str, Any]:
@@ -4728,7 +4820,11 @@ def _qualification_upgrade_locked(args: argparse.Namespace) -> dict[str, Any]:
         validate_qualification_plan(plan)
         if plan["request"] != expected_request:
             raise ReleaseError("qualification migration replay inputs changed")
-        return qualification_completion(completion, plan)
+        return apply_qualification_plan(
+            plan, args.kits_root.resolve(),
+            args.operator_id if plan["approval_required"] else None,
+            started=getattr(args, "process_started", None),
+        )
     journal = state / "journal.json"
     if journal.exists() or journal.is_symlink():
         plan = safe_state(state / "latest.json", "qualification migration plan")
@@ -4836,18 +4932,47 @@ def _qualification_resume_locked(args: argparse.Namespace) -> dict[str, Any]:
     plan = safe_state(state / "latest.json", "qualification migration plan")
     validate_qualification_plan(plan)
     if (
+        plan["request"]["project"] != args.project
+        or plan["request"]["sha"] != args.sha
+    ):
+        raise ReleaseError("qualification migration resume target changed")
+    repair_sha = getattr(args, "repair_sha", None)
+    journal = state / "journal.json"
+    completion = state / "completion.json"
+    if repair_sha is not None:
+        release = args.kits_root / "releases" / repair_sha
+        journal_ready = False
+        if journal.exists() or journal.is_symlink():
+            journal_ready = read_qualification_journal(journal, plan).get(
+                "status",
+            ) in {"in-progress", "pass"}
+        completion_ready = False
+        if completion.exists() or completion.is_symlink():
+            qualification_completion(completion, plan, repair_sha)
+            completion_ready = True
+        if (
+            not SHA.fullmatch(repair_sha) or repair_sha == args.sha
+            or release.resolve(strict=True) != TRANSACTION_ROOT.resolve(strict=True)
+            or not (journal_ready or completion_ready)
+        ):
+            raise ReleaseError("qualification migration repair helper is invalid")
+    if (
         plan["request"]["operator_id"] != args.approved_by
-        or not plan["approval_required"]
+        or not plan["approval_required"] and repair_sha is None
     ):
         raise ReleaseError("qualification migration approver does not match")
-    if plan["expires_epoch"] <= int(time.time()) and not (state / "journal.json").exists():
+    if (
+        plan["expires_epoch"] <= int(time.time())
+        and not journal.exists() and not completion.exists()
+    ):
         raise ReleaseError("qualification migration approval plan is stale")
     options = (
         {"started": args.process_started}
         if hasattr(args, "process_started") else {}
     )
     return apply_qualification_plan(
-        plan, args.kits_root.resolve(strict=True), args.approved_by, **options,
+        plan, args.kits_root.resolve(strict=True), args.approved_by,
+        repair_sha=repair_sha, **options,
     )
 
 
@@ -5291,6 +5416,7 @@ def main() -> int:
     qualification_resume_parser.add_argument("--project", required=True)
     qualification_resume_parser.add_argument("--sha", required=True)
     qualification_resume_parser.add_argument("--approved-by", required=True)
+    qualification_resume_parser.add_argument("--repair-sha")
     for name in ("qualification-recover-plan", "qualification-recover-apply"):
         recovery_parser = commands.add_parser(name)
         recovery_parser.add_argument("--project", required=True)

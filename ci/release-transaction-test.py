@@ -1337,6 +1337,34 @@ class ReleaseTransactionTest(unittest.TestCase):
             "GIT_REPLACE_REF_BASE", "HTTPS_PROXY", "PS4", "XDG_CONFIG_HOME",
         ):
             self.assertNotIn(variable, evidence["environment"])
+        target_sha = "a" * 40
+        missing_target = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification", "resume",
+             "--project", "relay", "--sha", target_sha, "--approved-by", "tester",
+             "--repair-sha", sha],
+            capture_output=True, text=True, env=environment, check=False,
+        )
+        self.assertEqual(missing_target.returncode, 1)
+        self.assertIn("trusted install manifest", missing_target.stderr)
+        target_release = releases / target_sha
+        shutil.copytree(release, target_release)
+        target_manifest = manifests / f"{target_sha}.json"
+        target_manifest.write_text(json.dumps({
+            "canonical_origin": str(origin), "created_at": "2026-08-23T00:00:00Z",
+            "git_tree": tree, "kit_sha": target_sha, "schema_version": 1,
+            "sealed_release_path": str(target_release),
+        }) + "\n", encoding="utf-8")
+        target_manifest.chmod(0o600)
+        repaired = subprocess.run(
+            ["bash", str(ROOT / "scripts/factory-kit.sh"), "qualification", "resume",
+             "--project", "relay", "--sha", target_sha, "--approved-by", "tester",
+             "--repair-sha", sha],
+            capture_output=True, text=True, env=environment, check=False,
+        )
+        self.assertEqual(repaired.returncode, 0, repaired.stderr)
+        arguments = json.loads(repaired.stdout)["arguments"]
+        self.assertEqual(arguments[-2:], ["--repair-sha", sha])
+        self.assertIn(target_sha, arguments)
 
     def test_protected_check_fixture_matches_slurped_check_run_shape(self) -> None:
         result = subprocess.run(
@@ -2778,7 +2806,14 @@ class ReleaseTransactionTest(unittest.TestCase):
                 "sha256": "1" * 64,
             },
             "identity": {
-                "active": {"generation": 1, "kit_sha": "b" * 40},
+                "active": {
+                    "generation": 1, "kit_sha": "b" * 40,
+                    "path": "/tmp/active", "sha256": "3" * 64,
+                },
+                "authority_sha256": "4" * 64,
+                "environment": {"path": "/tmp/environment", "sha256": "5" * 64},
+                "previous_receipt": {"path": "/tmp/receipt", "sha256": "6" * 64},
+                "provider_state": {},
                 "selected_tickets": ["T-1"],
             },
             "preview_elapsed_ms": 1,
@@ -3746,16 +3781,140 @@ class ReleaseTransactionTest(unittest.TestCase):
         ):
             RELEASE.apply_qualification_plan(plan, self.kits, None)
 
-    def test_qualification_timer_keeps_prior_restart_budget(self) -> None:
+    def test_qualification_restart_uses_furthest_signed_phase_once(self) -> None:
+        plan = self.qualification_plan(approval_required=False)
+        state = RELEASE.qualification_state(self.kits, "relay", self.sha)
+        RELEASE.secure_directory(state, create=True)
+        historical = [
+            *plan["preview_timings"],
+            {"duration_ms": 59_000, "phase": "provider_cli"},
+        ]
+        for phase in (
+            "validated", "runtime_ready", "provider_cli_ready",
+            "validated", "runtime_ready", "provider_cli_ready",
+        ):
+            RELEASE.qualification_journal_update(
+                state / "journal.json", plan, phase, historical,
+            )
+        signed = RELEASE.safe_state(
+            state / "journal.json", "qualification migration journal",
+        )
+        unsigned = dict(signed)
+        unsigned.pop("record_sha256")
+        RELEASE.atomic_json(state / "journal.json", unsigned)
+        with self.assertRaisesRegex(
+            RELEASE.ReleaseError, "journal is invalid",
+        ):
+            RELEASE.apply_qualification_plan(plan, self.kits, None)
+        RELEASE.atomic_json(state / "journal.json", signed)
+        target = json.loads(json.dumps(plan["identity"]))
+        target["active"].update(
+            generation=2, kit_sha=self.sha, sha256="7" * 64,
+        )
+        target["authority_sha256"] = "8" * 64
+        target["environment"]["sha256"] = "9" * 64
+        target["previous_receipt"]["sha256"] = "a" * 64
+        module = mock.Mock()
+        module.qualification_lane.return_value = self.root / "lane"
+        doctor = {
+            "checks": {}, "overall_status": "ok",
+            "schema": "nysa.software-factory.doctor/v2",
+        }
+        upgraded = mock.Mock(
+            returncode=0,
+            stdout=json.dumps({"launcher": "/tmp/factory-launch", "status": "upgraded"}),
+        )
+        journals = []
+        journal_update = RELEASE.qualification_journal_update
+
+        def capture_journal(*args: object) -> dict[str, object]:
+            value = journal_update(*args)
+            journals.append(value)
+            return value
+
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_basis",
+                side_effect=[(target, module), (target, module), (target, module)],
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_fallback",
+                return_value=(plan["fallback_readiness"]["evidence"],
+                              plan["fallback_readiness"]["sha256"]),
+            ),
+            mock.patch.object(RELEASE.subprocess, "run", return_value=upgraded) as process,
+            mock.patch.object(RELEASE, "run_json", return_value=doctor) as run_json,
+            mock.patch.object(
+                RELEASE, "qualification_journal_update", side_effect=capture_journal,
+            ),
+        ):
+            receipt = RELEASE.apply_qualification_plan(
+                plan, self.kits, None, repair_sha="d" * 40,
+            )
+        process.assert_called_once()
+        run_json.assert_called_once()
+        self.assertEqual(receipt["repair_sha"], "d" * 40)
+        self.assertLess(receipt["total_duration_ms"], RELEASE.QUALIFICATION_BUDGET_MS)
+        self.assertEqual(receipt["timings"][:len(historical)], historical)
+        self.assertEqual(receipt["journal_sha256"], journals[-1]["record_sha256"])
+        self.assertEqual(journals[-1]["phase"], "doctor_ready")
+        self.assertEqual(journals[-1]["repair_sha"], "d" * 40)
+        self.assertFalse((state / "journal.json").exists())
+        self.assertFalse((state / ".migration.lock").exists())
+        self.assertEqual(
+            RELEASE.apply_qualification_plan(
+                plan, self.kits, None, repair_sha="d" * 40,
+            ),
+            receipt,
+        )
+        with self.assertRaisesRegex(
+            RELEASE.ReleaseError, "completion is invalid",
+        ):
+            RELEASE.apply_qualification_plan(
+                plan, self.kits, None, repair_sha="e" * 40,
+            )
+        self.assertFalse((state / ".migration.lock").exists())
+
+    def test_qualification_restart_refuses_journal_ahead_of_live_activation(self) -> None:
+        plan = self.qualification_plan(approval_required=False)
+        state = RELEASE.qualification_state(self.kits, "relay", self.sha)
+        RELEASE.secure_directory(state, create=True)
+        for phase in (
+            "validated", "runtime_ready", "provider_cli_ready", "environment_upgraded",
+        ):
+            RELEASE.qualification_journal_update(
+                state / "journal.json", plan, phase, plan["preview_timings"],
+            )
+        module = mock.Mock()
+        with (
+            mock.patch.object(
+                RELEASE, "qualification_basis",
+                return_value=(plan["identity"], module),
+            ),
+            mock.patch.object(
+                RELEASE, "qualification_fallback",
+                return_value=(plan["fallback_readiness"]["evidence"],
+                              plan["fallback_readiness"]["sha256"]),
+            ),
+            self.assertRaisesRegex(
+                RELEASE.ReleaseError, "journal exceeds live activation",
+            ),
+        ):
+            RELEASE.apply_qualification_plan(plan, self.kits, None)
+
+    def test_qualification_timer_restart_ignores_historical_budget(self) -> None:
         timer = RELEASE.QualificationTimer(
             [{"duration_ms": RELEASE.QUALIFICATION_BUDGET_MS + 1,
               "phase": "runtime"}],
-            RELEASE.QUALIFICATION_BUDGET_MS + 1,
+            0,
         )
+        timer.check()
+        self.assertEqual(timer.current_timings, [])
+        timer.started -= 61
         with self.assertRaisesRegex(
-            RELEASE.ReleaseError, "exceeded 60 seconds during runtime",
+            RELEASE.ReleaseError, "exceeded 60 seconds during current",
         ):
-            timer.check()
+            timer.phase("current", lambda: None)
 
     def test_qualification_fallback_preserves_the_typed_reason(self) -> None:
         module = mock.Mock()
@@ -3814,7 +3973,74 @@ class ReleaseTransactionTest(unittest.TestCase):
             self.assertEqual(
                 RELEASE._qualification_resume_locked(args)["status"], "doctor_ready",
             )
-        applied.assert_called_once_with(plan, self.kits, "tester")
+        applied.assert_called_once_with(
+            plan, self.kits, "tester", repair_sha=None,
+        )
+
+        repair_plan = self.qualification_plan(approval_required=False)
+        RELEASE.atomic_json(state / "latest.json", repair_plan)
+        RELEASE.qualification_journal_update(
+            state / "journal.json", repair_plan, "provider_cli_ready",
+            repair_plan["preview_timings"],
+        )
+        repair_sha = "d" * 40
+        repair_release = self.kits / "releases" / repair_sha
+        repair_release.mkdir(parents=True)
+        args.repair_sha = repair_sha
+        with (
+            mock.patch.object(RELEASE, "TRANSACTION_ROOT", repair_release),
+            mock.patch.object(
+                RELEASE, "apply_qualification_plan",
+                return_value={"status": "doctor_ready"},
+            ) as repaired,
+        ):
+            self.assertEqual(
+                RELEASE._qualification_resume_locked(args)["status"], "doctor_ready",
+            )
+        repaired.assert_called_once_with(
+            repair_plan, self.kits, "tester", repair_sha=repair_sha,
+        )
+        unsigned_receipt = {
+            "active_sha256": "1" * 64,
+            "approval_sha256": repair_plan["approval_sha256"],
+            "doctor_sha256": "2" * 64,
+            "environment_sha256": "3" * 64,
+            "factory_sha": self.sha,
+            "generation": 2,
+            "journal_sha256": "4" * 64,
+            "project": "relay",
+            "repair_sha": repair_sha,
+            "schema": RELEASE.QUALIFICATION_RECEIPT_SCHEMA,
+            "slowest_phase": {"duration_ms": 1, "phase": "doctor"},
+            "status": "doctor_ready",
+            "timings": [],
+            "total_duration_ms": 1,
+        }
+        receipt = {
+            **unsigned_receipt,
+            "completion_sha256": RELEASE.digest(unsigned_receipt),
+        }
+        RELEASE.atomic_json(state / "completion.json", receipt)
+        (state / "journal.json").unlink()
+        with (
+            mock.patch.object(RELEASE, "TRANSACTION_ROOT", repair_release),
+            mock.patch.object(
+                RELEASE, "apply_qualification_plan", return_value=receipt,
+            ) as replayed,
+        ):
+            self.assertEqual(RELEASE._qualification_resume_locked(args), receipt)
+        replayed.assert_called_once_with(
+            repair_plan, self.kits, "tester", repair_sha=repair_sha,
+        )
+        foreign = json.loads(json.dumps(repair_plan))
+        foreign.pop("approval_sha256")
+        foreign["request"]["project"] = "other"
+        RELEASE.atomic_json(state / "latest.json", RELEASE.seal_plan(foreign))
+        args.repair_sha = None
+        with self.assertRaisesRegex(
+            RELEASE.ReleaseError, "resume target changed",
+        ):
+            RELEASE._qualification_resume_locked(args)
 
     def test_qualification_completion_replay_returns_identical_receipt(self) -> None:
         plan = self.qualification_plan(approval_required=False)
