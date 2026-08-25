@@ -21,6 +21,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 COORDINATOR = ROOT / "scripts/provider-coordinator.py"
+DOCTOR = ROOT / "scripts/factory-doctor.sh"
 
 
 def module(name, path):
@@ -425,6 +426,463 @@ class AttemptCancellationTest(unittest.TestCase):
                 2_000_000, 5,
             ),
         )
+
+    def test_orphaned_submitted_wrapper_cancels_once_and_preserves_sibling(self):
+        database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"
+        source_sha = "d" * 40
+        (self.root / "factory/KIT_PIN").write_text(f"{source_sha}\n")
+        (self.root / "factory/PROJECT.env").write_text(
+            "MAX_CONCURRENT_TICKETS=3\n"
+        )
+        attempt_id = self.submitted_provider_attempt(
+            database, attempt_id="run-1-cli",
+        )
+        provider, provider_start = self.spawn()
+        values = self.manifest(
+            provider, provider_start, go="1", provider_attempt_id=attempt_id,
+        )
+        values.update({
+            "contract_version": "2.0.0", "kit_sha": source_sha,
+            "submitted_at_epoch_ns": "", "task_submitted": "0",
+            "ticket_kit_sha": source_sha,
+        })
+        self.write_meta(values)
+
+        wrapper, wrapper_start = self.spawn()
+        claim = self.stale_claim(
+            self.root / "factory/.active-runs", wrapper, wrapper_start,
+        )
+        sibling_claim = claim.parent / "T-2.reviewer.lock"
+        sibling_claim.mkdir()
+        sibling_owner = (
+            f"pid={wrapper.pid}\nprocess_start={wrapper_start}\n"
+            f"token={'b' * 32}\n"
+        ).encode()
+        (sibling_claim / "owner").write_bytes(sibling_owner)
+        wrapper.terminate()
+        wrapper.wait(timeout=5)
+        heartbeat, heartbeat_start = self.spawn()
+        sibling, _sibling_start = self.spawn()
+        wrapper_record = self.runs / "run-1.wrapper"
+        wrapper_record.write_text(
+            f"run_id=run-1\nwrapper_pid={wrapper.pid}\n"
+            f"wrapper_process_start={wrapper_start}\n"
+            f"heartbeat_pid={heartbeat.pid}\nheartbeat_pgid={heartbeat.pid}\n"
+            f"heartbeat_process_start={heartbeat_start}\n"
+        )
+        for suffix in ("ready", "go", "gate"):
+            (self.runs / f".run-1.{suffix}").touch()
+        (self.runs / ".run-1.submitted").write_text(
+            f"pid={provider.pid}\nsubmitted_at_epoch_ns=103500000000\n"
+        )
+        leases = self.root / "factory/.dispatch-leases"
+        leases.mkdir()
+        now = int(time.time())
+        selected_lease = {
+            "claimed_epoch": now - 1,
+            "expires_epoch": now + 900,
+            "lease_id": "b" * 64,
+            "schema_version": 1,
+            "ticket": "T-1",
+        }
+        sibling_lease = {
+            "claimed_epoch": now - 1,
+            "expires_epoch": now + 900,
+            "lease_id": "c" * 64,
+            "schema_version": 1,
+            "ticket": "T-2",
+        }
+        (leases / "T-1.json").write_bytes(CANCEL.canonical(selected_lease))
+        (leases / "T-2.json").write_bytes(CANCEL.canonical(sibling_lease))
+        runtime_root = self.root.parent / "qualification"
+        selected_runtime = runtime_root / f"attempts/{attempt_id}"
+        selected_runtime.mkdir(parents=True)
+        (selected_runtime / "owner").write_text(f"{attempt_id}\n")
+        os.mkfifo(selected_runtime / "provider.pipe")
+        sibling_runtime = runtime_root / "attempts/sibling-cli"
+        sibling_runtime.mkdir()
+        (sibling_runtime / "owner").write_text("sibling-cli\n")
+        admission = self.root.parent / ".dispatch-admission.lock"
+        controller = self.root.parent / "reconcile.lock"
+        admission.touch(mode=0o600)
+        controller.touch(mode=0o600)
+        descriptor = os.open(admission, os.O_RDWR)
+        controller_descriptor = os.open(controller, os.O_RDWR)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        fcntl.flock(controller_descriptor, fcntl.LOCK_EX)
+        environment = {
+            "FACTORY_CLI_RUNTIME_ROOT": str(runtime_root),
+            "FACTORY_CROSS_RELEASE_PRODUCT_ID": f"qualification:{source_sha}",
+            "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
+            "FACTORY_DISPATCH_ADMISSION_LOCK": str(admission),
+            "FACTORY_DISPATCH_ADMISSION_LOCK_FD": str(descriptor),
+            "FACTORY_PROVIDER_DB": str(database),
+            "FACTORY_QUALIFICATION_CONTROLLER_LOCK": str(controller),
+            "FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD": str(
+                controller_descriptor
+            ),
+        }
+        try:
+            with mock.patch.dict(os.environ, environment, clear=False):
+                plan = CANCEL.calculate(
+                    self.root, "T-1", "run-1", "operator_requested", "9" * 32,
+                )
+                self.assertEqual(plan["schema"], CANCEL.ORPHAN_PLAN_SCHEMA)
+                saved_claim = claim.with_name("saved-builder.lock")
+                claim.rename(saved_claim)
+                claim.mkdir()
+                (claim / "owner").write_bytes((saved_claim / "owner").read_bytes())
+                with self.assertRaisesRegex(
+                    CANCEL.CancelError, "active-run claim changed",
+                ):
+                    CANCEL.apply_plan(self.root, plan, 1)
+                shutil.rmtree(claim)
+                saved_claim.rename(claim)
+                selected_lease["expires_epoch"] += 300
+                (leases / "T-1.json").write_bytes(
+                    CANCEL.canonical(selected_lease)
+                )
+                self.assertEqual(
+                    CANCEL.calculate(
+                        self.root, "T-1", "run-1", "operator_requested", "9" * 32,
+                    ),
+                    plan,
+                )
+                original_wrapper = wrapper_record.read_bytes()
+                wrapper_record.write_bytes(original_wrapper + b"changed=1\n")
+                with self.assertRaisesRegex(CANCEL.CancelError, "wrapper changed"):
+                    CANCEL.apply_plan(self.root, plan, 1)
+                self.assertEqual(
+                    self.provider_command(
+                        database, "status", "--attempt-id", attempt_id,
+                    )["attempts"][0]["state"],
+                    "submitted",
+                )
+                self.assertTrue(IDENTITY.group_alive(provider.pid))
+                self.assertTrue(IDENTITY.group_alive(heartbeat.pid))
+                wrapper_record.write_bytes(original_wrapper)
+                provider_reaper = threading.Thread(target=provider.wait)
+                heartbeat_reaper = threading.Thread(target=heartbeat.wait)
+                provider_reaper.start()
+                heartbeat_reaper.start()
+                original_converge = CANCEL.converge_provider_attempt
+                failed = False
+
+                def fail_once(*args):
+                    nonlocal failed
+                    if not failed:
+                        failed = True
+                        raise CANCEL.CancelError("injected recovery interruption")
+                    return original_converge(*args)
+
+                with mock.patch.object(
+                    CANCEL, "converge_provider_attempt", side_effect=fail_once,
+                ):
+                    with self.assertRaisesRegex(
+                        CANCEL.CancelError, "injected recovery interruption",
+                    ):
+                        CANCEL.apply_plan(self.root, plan, 1)
+                    self.assertFalse(IDENTITY.group_alive(heartbeat.pid))
+                    self.assertFalse((leases / "T-1.json").exists())
+                    self.assertTrue(selected_runtime.exists())
+                    self.assertTrue(
+                        (self.runs / "run-1.cancel-request.json").exists()
+                    )
+                    (self.root / ".gitignore").write_text("factory/\n")
+                    (self.root / "factory/initiatives").mkdir()
+                    (self.root / "factory/tickets").mkdir()
+                    (self.root / "factory/PROJECT.env").write_text(
+                        "MAX_CONCURRENT_TICKETS=3\nTEST_PATHS=tests\n"
+                    )
+                    qualification_manifest = self.root / "factory/QUALIFICATION.json"
+                    qualification_manifest.write_text(json.dumps({
+                        "budget_usd": "100.000000",
+                        "capacity": 3,
+                        "contract_version": "2.0.0",
+                        "factory_sha": source_sha,
+                        "generation": 1,
+                        "per_run_budget_usd": "2.000000",
+                        "per_ticket_budget_usd": "25.000000",
+                        "schema": "nysa.software-factory.qualification/v2",
+                        "target_done": 1,
+                        "tickets": ["T-1"],
+                    }))
+                    (self.root / "factory/initiatives/I-1.md").write_text(
+                        "# Test initiative\n"
+                    )
+                    (self.root / "factory/tickets/T-1.md").write_text(
+                        "State: Building\nPriority: normal\nInitiative: I-1\n"
+                        "Depends-On: none\nProduct-Decisions: frozen\n"
+                        "Builder ownership: src/app.txt only\n"
+                        "Fixture-Seams: none\nAuthentication-Seams: none\n"
+                        "Protected-Test-Conflicts: none\n"
+                        f"Kit-SHA: {source_sha}\n"
+                    )
+                    subprocess.run(
+                        ["git", "init", "-q", str(self.root)], check=True,
+                    )
+                    subprocess.run(
+                        ["git", "-C", str(self.root), "config", "user.name", "Test"],
+                        check=True,
+                    )
+                    subprocess.run(
+                        [
+                            "git", "-C", str(self.root), "config", "user.email",
+                            "test@example.invalid",
+                        ],
+                        check=True,
+                    )
+                    subprocess.run(
+                        ["git", "-C", str(self.root), "add", ".gitignore"],
+                        check=True,
+                    )
+                    subprocess.run(
+                        [
+                            "git", "-C", str(self.root), "add", "-f",
+                            "factory/KIT_PIN", "factory/PROJECT.env",
+                            "factory/QUALIFICATION.json", "factory/initiatives/I-1.md",
+                            "factory/tickets/T-1.md",
+                        ],
+                        check=True,
+                    )
+                    subprocess.run(
+                        ["git", "-C", str(self.root), "commit", "-qm", "fixture"],
+                        check=True,
+                    )
+                    product_sha = subprocess.run(
+                        ["git", "-C", str(self.root), "rev-parse", "HEAD"],
+                        text=True, capture_output=True, check=True,
+                    ).stdout.strip()
+                    product_tree = subprocess.run(
+                        ["git", "-C", str(self.root), "rev-parse", "HEAD^{tree}"],
+                        text=True, capture_output=True, check=True,
+                    ).stdout.strip()
+                    doctor_environment = {
+                        **environment,
+                        "FACTORY_DOCTOR_TIMEOUT_SECONDS": "1",
+                        "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+                        "FACTORY_QUALIFICATION_PRODUCT_SHA": product_sha,
+                        "FACTORY_QUALIFICATION_PRODUCT_TREE": product_tree,
+                        "FACTORY_QUALIFICATION_MANIFEST": str(
+                            qualification_manifest
+                        ),
+                        "FACTORY_RELEASE_CONTRACT_VERSION": "2.0.0",
+                    }
+                    doctor = subprocess.run(
+                        [
+                            str(DOCTOR), "--json", "--kit-dir", str(ROOT),
+                            "--product-root", str(self.root),
+                            "--kit-sha", source_sha,
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                        env={
+                            **os.environ,
+                            **doctor_environment,
+                        },
+                        timeout=30,
+                    )
+                    diagnosed = next(
+                        item for item in json.loads(doctor.stdout)["checks"]
+                        ["runtime"]["runs"] if item["run_id"] == "run-1"
+                    )
+                    self.assertEqual(
+                        (
+                            diagnosed["state"], diagnosed["ticket"],
+                            diagnosed["recovery_command"],
+                            diagnosed["recovery_reason"],
+                        ),
+                        (
+                            "stale", "T-1", "qualification recover-plan",
+                            "orphaned_cli_wrapper",
+                        ),
+                    )
+                    drifted_doctor = subprocess.run(
+                        [
+                            str(DOCTOR), "--json", "--kit-dir", str(ROOT),
+                            "--product-root", str(self.root),
+                            "--kit-sha", source_sha,
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                        env={
+                            **os.environ,
+                            **doctor_environment,
+                            "FACTORY_QUALIFICATION_PRODUCT_SHA": "e" * 40,
+                        },
+                        timeout=30,
+                    )
+                    drifted = next(
+                        item for item in json.loads(drifted_doctor.stdout)["checks"]
+                        ["runtime"]["runs"] if item["run_id"] == "run-1"
+                    )
+                    self.assertEqual(
+                        (drifted["recovery_command"], drifted["recovery_reason"]),
+                        (None, "qualification_identity_invalid"),
+                    )
+                    foreign_manifest = self.root.parent / "foreign.json"
+                    foreign_manifest.write_text("{}\n")
+                    foreign_doctor = subprocess.run(
+                        [
+                            str(DOCTOR), "--json", "--kit-dir", str(ROOT),
+                            "--product-root", str(self.root),
+                            "--kit-sha", source_sha,
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                        env={
+                            **os.environ,
+                            **doctor_environment,
+                            "FACTORY_QUALIFICATION_MANIFEST": str(foreign_manifest),
+                        },
+                        timeout=30,
+                    )
+                    foreign = next(
+                        item for item in json.loads(foreign_doctor.stdout)["checks"]
+                        ["runtime"]["runs"] if item["run_id"] == "run-1"
+                    )
+                    self.assertEqual(
+                        (foreign["recovery_command"], foreign["recovery_reason"]),
+                        (None, "qualification_identity_invalid"),
+                    )
+                    with mock.patch.object(
+                        CANCEL, "remove_bound_tree",
+                        side_effect=CANCEL.CancelError(
+                            "injected runtime cleanup interruption"
+                        ),
+                    ):
+                        with self.assertRaisesRegex(
+                            CANCEL.CancelError,
+                            "injected runtime cleanup interruption",
+                        ):
+                            CANCEL.apply_plan(self.root, plan, 1)
+                    quarantine = selected_runtime.with_name(
+                        f".{attempt_id}.cancel-{plan['preview_hash'][:24]}"
+                    )
+                    self.assertFalse(selected_runtime.exists())
+                    self.assertTrue(quarantine.exists())
+                    original_remove = CANCEL.remove_bound_tree
+                    interrupted_claim = False
+
+                    def fail_claim_once(path, device, inode):
+                        nonlocal interrupted_claim
+                        if ".claim-" in path.name and not interrupted_claim:
+                            interrupted_claim = True
+                            raise CANCEL.CancelError(
+                                "injected claim cleanup interruption"
+                            )
+                        return original_remove(path, device, inode)
+
+                    with mock.patch.object(
+                        CANCEL, "remove_bound_tree", side_effect=fail_claim_once,
+                    ):
+                        with self.assertRaisesRegex(
+                            CANCEL.CancelError,
+                            "injected claim cleanup interruption",
+                        ):
+                            CANCEL.apply_plan(self.root, plan, 1)
+                    claim_quarantine = claim.with_name(
+                        f".{claim.name}.claim-{plan['preview_hash'][:24]}"
+                    )
+                    self.assertFalse(claim.exists())
+                    self.assertTrue(claim_quarantine.exists())
+                    (claim_quarantine / "owner").unlink()
+                    receipt = CANCEL.apply_plan(self.root, plan, 1)
+                provider_reaper.join(timeout=5)
+                heartbeat_reaper.join(timeout=5)
+                self.assertEqual(CANCEL.apply_plan(self.root, plan, 1), receipt)
+                self.assertEqual(
+                    CANCEL.calculate(
+                        self.root, "T-1", "run-1", "operator_requested", None,
+                    ),
+                    plan,
+                )
+            with self.assertRaisesRegex(
+                CANCEL.CancelError, "sealed qualification recovery",
+            ):
+                CANCEL.apply_plan(self.root, plan, 1)
+        finally:
+            os.close(descriptor)
+            os.close(controller_descriptor)
+
+        terminal = self.provider_command(
+            database, "status", "--attempt-id", attempt_id,
+        )["attempts"][0]
+        manifest = IDENTITY.parse_fields(
+            (self.runs / "run-1.meta").read_bytes(), "run manifest",
+        )
+        self.assertEqual(
+            (
+                receipt["accounting_state"], receipt["charged_usd"],
+                terminal["state"], terminal["terminal_result"],
+                terminal["charge_micro_usd"], terminal["version"],
+                manifest["task_submitted"], manifest["submitted_at_epoch_ns"],
+            ),
+            (
+                "cancelled_conservative", "2.00", "terminal", "cancelled",
+                2_000_000, 5, "1", "102999999999",
+            ),
+        )
+        self.assertTrue(IDENTITY.group_alive(sibling.pid))
+        self.assertEqual(json.loads((leases / "T-2.json").read_text()), sibling_lease)
+        self.assertFalse(claim.exists())
+        self.assertEqual((sibling_claim / "owner").read_bytes(), sibling_owner)
+        self.assertFalse((leases / "T-1.json").exists())
+        self.assertFalse(wrapper_record.exists())
+        self.assertFalse(selected_runtime.exists())
+        self.assertTrue(sibling_runtime.exists())
+        for suffix in ("pid", "ready", "go", "gate", "submitted"):
+            name = f"run-1.{suffix}" if suffix == "pid" else f".run-1.{suffix}"
+            self.assertFalse((self.runs / name).exists())
+        self.assertFalse((self.root / "factory/.launch.lock").exists())
+        self.assertFalse((self.root / "factory/.dispatch-leases.lock").exists())
+
+    def test_orphan_runtime_swap_after_preview_never_deletes_replacement(self):
+        runtime_root = self.root.parent / "runtime"
+        runtime = runtime_root / "attempts/run-1-cli"
+        runtime.mkdir(parents=True)
+        (runtime / "owner").write_text("run-1-cli\n")
+        replacement = runtime.with_name("replacement")
+        replacement.mkdir()
+        (replacement / "keep").write_text("replacement\n")
+        sibling = runtime.with_name("sibling")
+        sibling.mkdir()
+        (sibling / "keep").write_text("sibling\n")
+        info = runtime.lstat()
+        plan = {
+            "pgid": 99999999,
+            "preview_hash": "a" * 64,
+            "provider_attempt": {"attempt_id": "run-1-cli"},
+            "runtime": {
+                "device": info.st_dev,
+                "inode": info.st_ino,
+                "owner_sha256": CANCEL.digest((runtime / "owner").read_bytes()),
+                "path": str(runtime),
+            },
+            "schema": CANCEL.ORPHAN_PLAN_SCHEMA,
+        }
+        original_rename = os.rename
+        saved = runtime.with_name("saved")
+
+        def swap_then_rename(source, target, *args, **kwargs):
+            original_rename(runtime, saved)
+            original_rename(replacement, runtime)
+            return original_rename(source, target, *args, **kwargs)
+
+        with mock.patch.dict(
+            os.environ, {"FACTORY_CLI_RUNTIME_ROOT": str(runtime_root)}, clear=False,
+        ), mock.patch.object(CANCEL.os, "rename", side_effect=swap_then_rename):
+            with self.assertRaisesRegex(CANCEL.CancelError, "runtime changed"):
+                CANCEL.cleanup_orphan_runtime(plan)
+        quarantine = runtime.with_name(
+            f".{runtime.name}.cancel-{plan['preview_hash'][:24]}"
+        )
+        self.assertEqual((quarantine / "keep").read_text(), "replacement\n")
+        self.assertEqual((saved / "owner").read_text(), "run-1-cli\n")
+        self.assertEqual((sibling / "keep").read_text(), "sibling\n")
 
     def test_provider_only_pre_go_attempt_terminalizes_once_without_run_evidence(self):
         database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"

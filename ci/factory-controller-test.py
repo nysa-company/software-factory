@@ -17940,12 +17940,16 @@ class FactoryControllerTest(unittest.TestCase):
         )
         with (
             patch.object(CONTROL, "ensure_qualification_artifacts"),
-            patch.object(CONTROL.subprocess, "Popen", return_value=process),
+            patch.object(
+                CONTROL.subprocess, "Popen", return_value=process,
+            ) as popen,
         ):
             self.assertTrue(
                 controller.run_role(claim, "planner", "b" * 64, [])
             )
 
+        popen.assert_called_once()
+        self.assertIs(popen.call_args.kwargs.get("start_new_session"), True)
         self.assertEqual(process.waits, 1)
         self.assertEqual(observations, [("planner", "b" * 64)] * 2)
         self.assertEqual(
