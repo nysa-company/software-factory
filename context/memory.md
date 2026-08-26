@@ -10,6 +10,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Failed-attempt preview, replay, and historical committed-role checks carry only unchanged tracked baseline symlinks whose tree, index, and filesystem targets agree; every added, removed, changed, staged, or untracked symlink remains fail-closed.
 - A submitted Claude individual or organization-monthly spend-limit terminal and a strict Cursor zero-turn usage-exhaustion terminal are release-typed, fully accounted, and qualification-latched before another role launch; Cursor missing-result and timeout terminals retain their bounded reason, and operator watch explains whether to restore capacity or inspect provider availability. Planner login shells validate Node/npm through the certified pre-guard PATH while retaining the package-command guard for task execution. A failed submitted mutating role preserves policy-valid dirty output under one immutable run ref, restores the authenticated input before passport export, and replays cleanup without another provider attempt; unsafe or Reviewer dirt remains fail-closed and untouched.
 - Any nonrecoverable role terminal in a fixed qualification cohort latches the same atomic launch boundary before the claim blocks or cancels; bounded invalid-output, prior-release launch-void, direct-model identity, and authenticated Cursor fallback recovery remain runnable, while already-admitted siblings only drain and account.
+- A qualification role that returns dirty output, invalid bounded output, or no commit may retry exactly once only after the first attempt is terminal-accounted, its authenticated input is clean and unchanged locally and remotely, and durable release/cohort/route/receipt evidence binds the replay. A second delivery failure on that same input latches the cohort before any sibling admission, pin, recovery, lease acquisition or renewal, or role mutation; exact terminal accounting and cleanup releases continue, and restart reconstructs the latch from the authenticated first-retry event and second terminal.
 - Qualification fallback and finish are ticket-independent within the sealed cohort: one candidate-scoped role attempt may fall back, but a replaced transition receipt cannot reopen that role before an intervening same-role success; a superseded direct preview names the latest unique run, evidence, and exact safe preview; explicit v1 fallback migrates atomically under the same approval, and blocked siblings do not starve an independent typed wait or approval. Aggregate same-head retry accepts only the safe current or legacy Factory `ci` template grammar.
 - An authenticated release-scoped qualification fallback refusal stops explicit preview and apply before readiness or mutation, names its claim evidence, and leaves only successor or fresh-cohort recovery; watch preserves the failed run across restart.
 - Recognized GitHub/Git transport loss is a typed wait, never a cohort defect. Exact remote confirmation and receipt/passport-bound replay resume post-provider role and publication commits without another model call; a disconnect inside a submitted provider attempt remains terminal-accounted and is not transport-replayed.
@@ -23,6 +24,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - The local release canary is one code-driven, product-agnostic command that creates contained local origins, runs setup/resume, and times one authenticated Planning transition plus sealed mock planner; its repository-test evidence is never promotable.
 - Model routing is portfolio policy; routes pin at the ticket boundary and change only via the Contract 1.4 journal flow. Fresh Kit-SHA affinity is a canonical ticket-header field so later role evidence remains append-only; one valid legacy trailing pin stays read-only. One profile resolution shares model-independent native-adapter readiness across its routes and runs independent probes in bounded parallel; Cursor readiness stays model-specific. Sealed Cursor inventory verifies the exact configured selection and displayed provider label in a disposable owner-only home, then accepts only the exact approved bare-version or legacy-prefixed one-line version shape.
 - The native Codex catalog exposes Sol, Terra, and Luna as stable OpenAI-family routes; their task-free readiness shares the existing model-independent Codex probe, and product policy may use any distinct pair.
+- Native Codex Reviewer output is decoded only from the final completed `agent_message` in one successful pinned-protocol JSONL turn. Unknown events/items, malformed JSON, command output, ambiguous messages, missing completion usage, and post-terminal data fail closed; plain legacy review text remains compatible when no native event stream is present.
 - Provider-free ticket readiness rejects tracked static SHA-256 path/digest tables over any Builder or Test-author-owned path unless the exact protected test is both a declared conflict and a Fixture-Seam; unrelated payload hashes/source reads do not collide, while semantic and dynamic source guards remain fail-closed Planner/Spec-linter work.
 - Ticket-bearing mutation CLIs reject noncanonical identifiers before release discovery or state. Ticket lifecycle decisions share one exact, known-State parser; operator actions validate before residue and again under their lock. Qualification Doctor reuses canonical ticket, product/tree, KIT_PIN/plan, protected-batch, receipt, passport, event, and runtime-residue validators read-only, accepts a selected Done ticket's historical Kit-SHA only through authenticated protected-terminal evidence, and suppresses provider probes on typed drift.
 - Reconciliation markers advance after every trusted progressed stage. A successor qualification may recover one older pre-refresh marker only when sealed retention authenticates its passport digest, one exact receipt-bound successful role is the sole run-snapshot delta, and the existing strict passport migration suffix reaches the clean remote checkpoint.
@@ -8350,3 +8352,26 @@ The approval binds the source receipt, active-project snapshot, exact contract
 fingerprint, target release, and current links/configuration. Any drift refuses
 and requires the ordinary fully drained maintenance transaction; replay is
 byte-stable.
+
+## 2026-08-26 — Decision 617: Qualification retries exact role delivery once
+
+Category: Reliability
+
+A dirty, missing-commit, or invalid-output role may receive one fresh receipt
+only after terminal accounting and exact clean local/remote input restoration.
+The retry event binds the immutable Factory, qualification, ticket, role, input,
+route, receipt, and first run. A second delivery failure latches the cohort on
+the shared mutation boundary; restart reconstructs exhaustion before any
+sibling admission or recovery. Terminal settlement shares that boundary so a
+pending latch permits only exact accounting, blocking, and cleanup releases.
+
+## 2026-08-26 — Decision 618: Native Codex reviews are terminal decoded
+
+Category: Reliability
+
+The Reviewer accepts native Codex JSONL only when its top-level and item types
+match the pinned CLI protocol, one successful turn ends the stream, and the
+final completed agent message is the sole verdict-bearing message. Tool output,
+unknown or malformed JSON, ambiguous messages, failed turns, unsafe size, and
+post-terminal data are never review authority. Plain legacy review text remains
+accepted only when no native event stream is established.

@@ -29,6 +29,9 @@ RUN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 MAX_EVENT_BYTES = 1_000_000
 MAX_CURSOR_BYTES = 1024
 TIMEOUT_REASONS = frozenset({"hard_timeout", "invalid_progress", "soft_timeout"})
+DELIVERY_RETRY_EXITS = frozenset({
+    "role_exit_dirty", "role_exit_invalid_output", "role_exit_no_commit",
+})
 TYPED_RECOVERY_KINDS = frozenset({
     "dirty_role_output",
     "model_identity_delivery", "model_identity_success",
@@ -397,9 +400,47 @@ def action_event(
             f"input_sha256={input_digest}:outcome_sha256={outcome_digest}"
         )
         question = "Inspect the terminal recovery evidence before choosing a supported repair."
+    elif event == "role_delivery_retry":
+        role_exit = source.get("role_exit")
+        input_head = source.get("input_head")
+        receipt = source.get("transition_receipt_sha256")
+        if (
+            role_exit not in DELIVERY_RETRY_EXITS
+            or not isinstance(input_head, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", input_head)
+            or not isinstance(receipt, str)
+            or not DIGEST.fullmatch(receipt)
+        ):
+            raise WatchError("automatic role retry context is invalid")
+        action = "automatic_role_retry"
+        reason = role_exit
+        question = (
+            "The Factory restored the exact authenticated input and is retrying "
+            "this role once. No rejected output was adopted."
+        )
     elif event == "role_blocked":
         reason = source.get("terminal_reason_code") or source.get("role_exit")
-        if isinstance(reason, str) and reason in TIMEOUT_REASONS:
+        if source.get("delivery_retry_exhausted") is True:
+            first_run = source.get("first_run_id")
+            current_run = source.get("run_id")
+            input_head = source.get("input_head")
+            if (
+                source.get("role_exit") not in DELIVERY_RETRY_EXITS
+                or not isinstance(first_run, str) or not RUN.fullmatch(first_run)
+                or not isinstance(current_run, str) or not RUN.fullmatch(current_run)
+                or first_run == current_run
+                or not isinstance(input_head, str)
+                or not re.fullmatch(r"[0-9a-f]{40}", input_head)
+            ):
+                raise WatchError("automatic role retry exhaustion is invalid")
+            action = "terminal_role_failure"
+            reason = f"automatic_delivery_retry_exhausted:first_run={first_run}"
+            question = (
+                "The one safe delivery retry was exhausted. Inspect the first "
+                "run named in reason and this event's run before choosing a "
+                "supported repair."
+            )
+        elif isinstance(reason, str) and reason in TIMEOUT_REASONS:
             action = "progress_timeout"
             question = "Inspect progress evidence and choose a supported retry or repair."
         elif reason == "provider_spend_limit":

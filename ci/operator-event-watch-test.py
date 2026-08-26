@@ -110,6 +110,60 @@ class OperatorEventWatchTest(unittest.TestCase):
         self.assertEqual(repeated.returncode, 0, repeated.stderr)
         self.assertEqual(repeated.stdout, "")
 
+    def test_delivery_retry_projects_retry_and_exhaustion(self) -> None:
+        self.write(self.source(
+            "role_delivery_retry",
+            input_head="a" * 40, role="builder", role_exit="role_exit_dirty",
+            run_id="run-1", transition_receipt_sha256="b" * 64,
+        ))
+        self.write(self.source(
+            "role_blocked", delivery_retry_exhausted=True,
+            first_run_id="run-1", input_head="a" * 40, role="builder",
+            role_exit="role_exit_dirty", run_id="run-2",
+            terminal_reason_code="",
+        ))
+        result = self.run_watch("--limit", "2", "--idle-timeout-seconds", "1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        events = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual(
+            [event["action"] for event in events],
+            ["automatic_role_retry", "terminal_role_failure"],
+        )
+        self.assertEqual(events[0]["reason"], "role_exit_dirty")
+        self.assertEqual(
+            events[1]["reason"],
+            "automatic_delivery_retry_exhausted:first_run=run-1",
+        )
+
+    def test_delivery_retry_refuses_malformed_context(self) -> None:
+        for event, details in (
+            (
+                "role_delivery_retry",
+                {
+                    "input_head": "bad", "role": "builder",
+                    "role_exit": "role_exit_dirty", "run_id": "run-1",
+                    "transition_receipt_sha256": "b" * 64,
+                },
+            ),
+            (
+                "role_blocked",
+                {
+                    "delivery_retry_exhausted": True,
+                    "first_run_id": "run-2", "input_head": "a" * 40,
+                    "role": "builder", "role_exit": "role_exit_dirty",
+                    "run_id": "run-2", "terminal_reason_code": "",
+                },
+            ),
+        ):
+            with self.subTest(event=event):
+                self.write(self.source(event, **details))
+                result = self.run_watch(
+                    "--limit", "1", "--idle-timeout-seconds", "1",
+                )
+                self.assertNotEqual(result.returncode, 0)
+                for path in self.events.iterdir():
+                    path.unlink()
+
     def test_semantic_round_wait_projects_the_exact_operator_action(self) -> None:
         question = (
             "Append exactly `OPERATOR AUTHORIZATION: spec-linter round 3` "

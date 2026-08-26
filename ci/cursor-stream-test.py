@@ -33,9 +33,27 @@ class CursorStreamTest(unittest.TestCase):
         contract: str = "1.7.0",
         adapter: str = "cursor-anthropic",
     ) -> subprocess.CompletedProcess:
+        if adapter == "codex" and (
+            not events or not isinstance(events[0], dict)
+            or events[0].get("type") != "thread.started"
+        ):
+            events = [
+                {"type": "thread.started", "thread_id": "thread-1"},
+                {"type": "turn.started"},
+                *events,
+            ]
+        return self.run_verdict_text(
+            "".join(json.dumps(event) + "\n" for event in events),
+            contract=contract, adapter=adapter,
+        )
+
+    def run_verdict_text(
+        self, stream_text: str, contract: str = "1.7.0",
+        adapter: str = "cursor-anthropic",
+    ) -> subprocess.CompletedProcess:
         with tempfile.TemporaryDirectory() as raw:
             stream = Path(raw) / "review.out"
-            stream.write_text("".join(json.dumps(event) + "\n" for event in events))
+            stream.write_text(stream_text)
             return subprocess.run(
                 [
                     str(VERDICT),
@@ -82,6 +100,302 @@ class CursorStreamTest(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("exactly one successful result", result.stderr)
+
+    def test_codex_reviewer_decodes_only_the_agent_verdict(self) -> None:
+        review = "REQUEST CHANGES\nFIX-OWNER: test-author\n\nAdd the missing case."
+        result = self.run_verdict(
+            [
+                {"type": "thread.started", "thread_id": "thread-1"},
+                {"type": "turn.started"},
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": "item-0", "type": "agent_message",
+                        "text": "I am inspecting the change.",
+                    },
+                },
+                {
+                    "type": "item.updated",
+                    "item": {
+                        "id": "item-plan", "type": "todo_list",
+                    },
+                },
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": "item-1", "type": "command_execution",
+                        "aggregated_output": "APPROVE",
+                    },
+                },
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": "item-2", "type": "agent_message",
+                        "text": "The focused checks are complete.",
+                    },
+                },
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": "item-3", "type": "agent_message", "text": review,
+                    },
+                },
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            ],
+            adapter="codex",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "REQUEST CHANGES\ttest-author\n")
+
+    def test_codex_reviewer_accepts_plain_and_bold_approval(self) -> None:
+        for verdict in ("APPROVE", "**Approve**"):
+            with self.subTest(verdict=verdict):
+                result = self.run_verdict(
+                    [
+                        {
+                            "type": "item.completed",
+                            "item": {
+                                "id": "item-1", "type": "agent_message",
+                                "text": verdict,
+                            },
+                        },
+                        {
+                            "type": "turn.completed",
+                            "usage": {"input_tokens": 1, "output_tokens": 1},
+                        },
+                    ],
+                    adapter="codex",
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "APPROVE\t\n")
+
+    def test_codex_reviewer_refuses_ambiguous_or_malformed_messages(self) -> None:
+        for events in (
+            [
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": "item-1", "type": "agent_message",
+                        "text": "APPROVE",
+                    },
+                },
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": "item-2", "type": "agent_message",
+                        "text": "APPROVE",
+                    },
+                },
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            ],
+            [
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": "item-1", "type": "agent_message",
+                        "text": "APPROVE\x00",
+                    },
+                },
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            ],
+            [
+                {"type": "item.completed", "item": "invalid"},
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            ],
+            [
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": "item-1", "type": "agent_message",
+                        "text": "APPROVE\n" + "x" * 131_072,
+                    },
+                },
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            ],
+        ):
+            with self.subTest(events=events):
+                result = self.run_verdict(events, adapter="codex")
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_codex_reviewer_returns_bounded_canonical_detail(self) -> None:
+        review = "Checks complete.\n\nAPPROVE\n\ntransport tail"
+        stream = "\n".join(json.dumps(event) for event in [
+            {"type": "thread.started", "thread_id": "thread-1"},
+            {"type": "turn.started"},
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "item-1", "type": "agent_message", "text": review,
+                },
+            },
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "item-2", "type": "command_execution",
+                    "output": "x" * 140_000,
+                },
+            },
+            {
+                "type": "turn.completed",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        ])
+        spec = importlib.util.spec_from_file_location("reviewer_verdict", VERDICT)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(
+            module.review_text(stream, "codex", "2.0.0"),
+            review,
+        )
+
+    def test_codex_reviewer_accepts_only_the_exact_adapter_metrics_trailer(
+        self,
+    ) -> None:
+        events = [
+            {"type": "thread.started", "thread_id": "thread-1"},
+            {"type": "turn.started"},
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "item-1", "type": "agent_message",
+                    "text": "APPROVE",
+                },
+            },
+            {
+                "type": "turn.completed",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        ]
+        stream = "".join(json.dumps(event) + "\n" for event in events)
+        accepted = self.run_verdict_text(
+            stream + "turns=1 cost_usd=0.2083\n", adapter="codex",
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual(accepted.stdout, "APPROVE\t\n")
+        refused = self.run_verdict_text(
+            stream + "turns=2 cost_usd=0.2083\n", adapter="codex",
+        )
+        self.assertNotEqual(refused.returncode, 0)
+
+    def test_codex_reviewer_requires_final_message_and_successful_turn(self) -> None:
+        for events in (
+            [
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": "item-1", "type": "agent_message",
+                        "text": "APPROVE",
+                    },
+                },
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": "item-2", "type": "agent_message",
+                        "text": "Still reviewing.",
+                    },
+                },
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            ],
+            [
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": "item-1", "type": "agent_message",
+                        "text": "APPROVE",
+                    },
+                },
+                {"type": "turn.failed"},
+            ],
+            [
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": "item-1", "type": "agent_message",
+                        "text": "APPROVE",
+                    },
+                },
+            ],
+        ):
+            with self.subTest(events=events):
+                result = self.run_verdict(events, adapter="codex")
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_codex_reviewer_refuses_malformed_json_but_preserves_plain_review(self) -> None:
+        for stream in (
+            '{"type":"turn.started"}\n{"type":\n',
+            '{"type":"turn.started","type":"turn.completed"}\n',
+            '{"type":"turn.started"}\n{"type":[]}\n',
+            '{"type":"turn.started"}\n{}\n',
+            '{"type":"turn.started"}\n[]\n',
+            '{"type":"turn.started"}\n{"type":"turn.completed"}\n',
+            '{}\n{"type":"turn.started"}\n',
+            '{"result":"**APPROVE**"}\n',
+            '{"type":"future.completed","result":"**APPROVE**"}\n',
+            (
+                '{"type":"item.completed","item":'
+                '{"id":"item-1","type":"future_agent_message",'
+                '"text":"APPROVE"}}\n'
+                '{"type":"turn.completed","usage":'
+                '{"input_tokens":1,"output_tokens":1}}\n'
+            ),
+            (
+                '{"type":"item.completed","item":'
+                '{"id":"item-1","type":"agent_message",'
+                '"text":"APPROVE"}}\n'
+                '{"type":"turn.completed","usage":'
+                '{"input_tokens":1,"output_tokens":1}}\n'
+            ),
+            (
+                '{"type":"thread.started","thread_id":"thread-1"}\n'
+                '{"type":"item.completed","item":'
+                '{"id":"item-1","type":"agent_message",'
+                '"text":"APPROVE"}}\n'
+                '{"type":"turn.completed","usage":'
+                '{"input_tokens":1,"output_tokens":1}}\n'
+            ),
+            (
+                '{"type":"thread.started","thread_id":"thread-1"}\n'
+                '{"type":"turn.started"}\n'
+                '{"type":"item.completed","item":'
+                '{"id":"item-1","type":"agent_message",'
+                '"text":"APPROVE"}}\n'
+                '{"type":"turn.completed","usage":'
+                '{"input_tokens":1,"output_tokens":1}}\n'
+                'trailing plaintext\n'
+            ),
+        ):
+            with self.subTest(stream=stream):
+                result = self.run_verdict_text(stream, adapter="codex")
+                self.assertNotEqual(result.returncode, 0)
+        for stream in (
+            '[P1] Review context: {"ok":true}\n\nAPPROVE\n',
+            '{"ok":true}\n\nAPPROVE\n',
+            '{"ok":true,"ok":false}\n\nAPPROVE\n',
+        ):
+            with self.subTest(plain=stream):
+                plain = self.run_verdict_text(stream, adapter="codex")
+                self.assertEqual(plain.returncode, 0, plain.stderr)
+                self.assertEqual(plain.stdout, "APPROVE\t\n")
 
     def test_reviewer_prefers_one_terminal_bound_assistant(self) -> None:
         review = "Review complete.\n\nREQUEST CHANGES\nFIX-OWNER: builder"

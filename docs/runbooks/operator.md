@@ -192,6 +192,13 @@ restart the same role. Never edit an in-flight manifest or backdate an override.
 - Do: if one more cycle is warranted, use the local operator console's Semantic retry authorization control with the exact ticket, role, and round from the watcher. Review the preview, then select **Authorize exact round**; the console keeps the approval hash in its authenticated server session and passes it to the unchanged sealed apply boundary. The hash-bearing `ticket-control authorize-round plan/apply` grammar remains available for recovery tooling. The controller writes and pushes one ticket-only child; ordinary reconciliation imports it. Each line grants only that next round.
 - Don't: add commentary to the authorization line, authorize a different role or round, change another path, or infer authorization. Reviewer remains governed by its budget-only review loop and has no semantic-round authorization gate.
 
+## A role returned without durable output
+
+- Notice: watch reports `automatic_role_retry` after the wrapper safely rejects dirty, missing-commit, or malformed bounded role output.
+- Do: let the exact retry finish. The Factory has already accounted the first attempt, preserved dirty output only as a diagnostic ref, restored the authenticated input, and issued a fresh one-use receipt.
+- Don't: cherry-pick the diagnostic ref, rerun the role directly, or edit the claim or passport.
+- Notice: if the same exact role input fails delivery again, watch reports `automatic_delivery_retry_exhausted` and the ticket remains fail-closed. Inspect both terminal attempts before choosing a successor repair; no third automatic attempt is issued.
+
 ## One successful Reviewer run is a duplicate
 
 - Notice: reconciliation refuses because authenticated successful Reviewer runs exceed recorded verdicts by exactly one. The evidence proves one duplicate exists but cannot identify which run because verdict lines do not bind run IDs.
