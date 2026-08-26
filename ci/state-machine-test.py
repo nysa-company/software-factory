@@ -202,6 +202,9 @@ class StateMachineTest(unittest.TestCase):
         self.assertIn("- **Freeze result:** PASS. Contract version N is frozen.", prompt)
         self.assertIn("without editing or removing prior frozen versions", prompt)
         self.assertIn("append one higher numbered frozen-contract epoch", prompt)
+        self.assertIn("every existing `SPEC-LINT:` verdict line byte-for-byte", prompt)
+        self.assertIn("only the Spec-linter may append a verdict", prompt)
+        self.assertIn("one higher-numbered frozen-contract epoch containing the repaired acceptance criteria and contract", prompt)
         self.assertIn("do not invoke npm, pnpm, yarn, npx, corepack", prompt)
 
     def test_planner_package_manager_guard_refuses_product_suites(self) -> None:

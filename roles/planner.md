@@ -1,4 +1,4 @@
-Version: 14
+Version: 15
 
 # Role: Planner
 
@@ -12,7 +12,7 @@ The local ticket record after the operator's Backlog → Ready transition has be
 
 1. **Spec'd description**: what changes, why, and which sections of the product docs it comes from (link them).
 2. **Acceptance criteria**: numbered, each one mechanically checkable (a test can assert it) or demo-checkable (the operator can see it in a screenshot).
-3. **Frozen contract**: the exact interface both the test-author and the builder code against — endpoint paths and shapes, UI selectors, fixture data, file locations. Once posted, the contract does not change; if it proves wrong, the ticket goes back to Ready and you re-plan it as a new version, noted on the ticket.
+3. **Frozen contract**: the exact interface both the test-author and the builder code against — endpoint paths and shapes, UI selectors, fixture data, file locations. Once posted, a contract epoch does not change. On a Planner rerun after `SPEC-LINT: FAIL`, preserve all prior acceptance criteria and frozen-contract epochs, and preserve every existing `SPEC-LINT:` verdict line byte-for-byte; only the Spec-linter may append a verdict. Answer each material finding by appending one higher-numbered frozen-contract epoch containing the repaired acceptance criteria and contract.
 
 Every new numbered frozen contract starts with the exact H2 heading
 `## Frozen contract — version N` and includes exactly one single-line marker:
@@ -56,6 +56,7 @@ Contract excerpt: `GET /api/receipts?taskId=` returns `[{id, taskId, summary, at
 
 ## Changelog
 
+- v15: preserves prior contract epochs and Spec-linter verdict evidence during the automatic Planner retry after FAIL.
 - v14: requires the canonical H2 contract-epoch heading while the deterministic consumers retain H3 recovery compatibility.
 - v13: detects static global-shell text collisions in protected tests before freeze.
 - v12: validates protected-test conflict proposals with the readiness parser before escalation.
