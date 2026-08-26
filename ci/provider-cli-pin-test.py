@@ -839,8 +839,7 @@ probe_version() {{ "$@"; }}
         release_b = self.kits / "releases" / SHA_B
         release_b.mkdir(mode=0o700)
         self.copy_release_files(release_b)
-        tree_b = self.release_tree(release_b)
-        self.write_manifest(release_b, SHA_B, tree_b)
+        self.write_manifest(release_b, SHA_B, TREE_B)
         self.seal(release_b)
         helper_b = release_b / "scripts/owner-provider-cli-pin.py"
 
