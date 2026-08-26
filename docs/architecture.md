@@ -1713,6 +1713,17 @@ protected mutation remain forbidden. If later successors have already migrated
 that passport, recovery additionally requires one continuous authenticated v2
 suffix from the failed role input to the current passport, with every
 head-changing edge revalidated as an exact Factory route-migration commit.
+An otherwise valid submitted Planner, Spec-linter, Test-author, Builder, or
+Narrator terminal that fails with dirty output is reconciled before passport
+export. The controller validates the exact terminal, receipt, input/output
+lineage, unchanged remote, and role boundary; preserves committed and dirty
+bytes under one immutable run-specific failed-role ref; then restores the
+tracked tree and only the proven untracked additions to the authenticated input.
+Restart reuses that exact ref and accepts only input, output, or preserved
+partial-restoration states, so cleanup and the ordinary exact-once failed-role
+passport can finish without another provider attempt. Reviewer mutation,
+unsafe content, route-plan dirt, remote drift, or ambiguous Git state remains a
+typed fail-closed stop with the original worktree retained.
 Planner repair reruns preserve prior Spec-linter verdicts and planning epochs
 byte-for-byte; only Spec-linter appends verdicts, while Planner answers each
 material FAIL finding through one higher-numbered frozen-contract epoch.

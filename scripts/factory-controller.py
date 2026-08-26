@@ -53,8 +53,11 @@ from legacy_closeout import (  # noqa: E402
     protected_terminal,
 )
 from failed_attempt_handoff import (  # noqa: E402
-    HandoffError, validate_committed_output,
+    GitHubHTTPSCredential, HandoffError, build_diagnostic_commit,
+    github_https_remote, preview_handoff,
+    validate_committed_output,
 )
+from historical_pr_objects import github_auth  # noqa: E402
 from route_evidence import (  # noqa: E402
     RouteEvidenceError, _handoff_policy, authenticated_fallback_head,
     exact_kit_sha_change, journal_extends, validate_route,
@@ -11325,6 +11328,302 @@ class Controller:
             and self.remote_passport_valid(claim)
         )
 
+    def quarantine_dirty_role_output(
+        self, claim: dict[str, Any], terminal: dict[str, str],
+    ) -> None:
+        role = claim.get("role", "")
+        run_id = terminal.get("run_id", "")
+        input_head = terminal.get("role_head_before", "")
+        output_head = terminal.get("role_head_after", "")
+        branch = claim.get("branch", "")
+        if (
+            role not in {
+                "planner", "spec-linter", "test-author", "builder", "narrator",
+            }
+            or terminal.get("role") != role
+            or terminal.get("ticket") != claim.get("ticket")
+            or terminal.get("phase") != "completed"
+            or terminal.get("accounting_state") not in TERMINAL_ACCOUNTING
+            or terminal.get("go_issued") != "1"
+            or terminal.get("task_submitted") != "1"
+            or terminal.get("transition_receipt_sha256")
+            != claim.get("receipt")
+            or terminal.get("kit_sha") != self.release_path.name
+            or terminal.get("role_branch_before") != branch
+            or terminal.get("role_remote_before") != input_head
+            or not SHA.fullmatch(input_head)
+            or not SHA.fullmatch(output_head)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id)
+            or not DIGEST.fullmatch(claim.get("receipt", ""))
+            or not re.fullmatch(r"[0-9]{1,3}", terminal.get("exit_status", ""))
+            or not re.fullmatch(
+                r"[a-z][a-z0-9_]{0,63}", terminal.get("role_exit", ""),
+            )
+            or (
+                terminal.get("exit_status") == "0"
+                and terminal.get("role_exit") == "ok"
+            )
+            or claim.get("publication_lease")
+            or not re.fullmatch(
+                r"[0-9]{16,19}", terminal.get("terminal_at_epoch_ns", ""),
+            )
+        ):
+            raise HandoffError("dirty role terminal identity is invalid")
+        subject = f"{claim['ticket']}: preserve dirty {role} output {run_id}"
+        diagnostic = f"refs/factory/failed-role/{claim['ticket']}/{run_id}"
+        policy = _handoff_policy(claim["ticket"])
+        binding = hashlib.sha256(canonical({
+            "accounting_state": terminal["accounting_state"],
+            "exit_status": terminal["exit_status"],
+            "factory_sha": self.release_path.name,
+            "input_head": input_head,
+            "output_head": output_head,
+            "policy_sha256": policy.digest,
+            "receipt_sha256": claim["receipt"],
+            "role": role,
+            "role_exit": terminal["role_exit"],
+            "run_id": run_id,
+            "ticket": claim["ticket"],
+        }).encode()).hexdigest()
+        with self.git_lock:
+            current_branch = self.cell_git(
+                claim, "symbolic-ref", "--quiet", "--short", "HEAD",
+            )
+            remote_status, local, remote = self.remote_cell_head_status(claim)
+            remote_url = self.cell_git(
+                claim, "remote", "get-url", "--", "origin",
+            )
+            if (
+                current_branch.returncode
+                or current_branch.stdout.strip() != branch
+                or local not in {input_head, output_head}
+                or remote != input_head
+                or remote_status != (
+                    "pushed" if local == input_head else "resume_commit_not_pushed"
+                )
+                or remote_url.returncode
+            ):
+                raise HandoffError("dirty role branch or remote drifted")
+            git_auth = None
+            if github_https_remote(remote_url.stdout.strip()):
+                capability = github_auth(remote_url.stdout.strip())
+                if capability is None:
+                    raise HandoffError("github_credential_unavailable")
+                git_auth = GitHubHTTPSCredential(capability[0])
+            validate_committed_output(
+                Path(claim["worktree"]), baseline=input_head, head=output_head,
+                role=role, policy=policy,
+            )
+            dirty = self.cell_git(
+                claim, "status", "--porcelain=v1", "-z", "--untracked-files=all",
+            )
+            staged = self.cell_git(
+                claim, "diff", "--cached", "--name-only", "-z", "--",
+            )
+            unstaged = self.cell_git(
+                claim, "diff", "--name-only", "-z", "--",
+            )
+            route_dirty = self.cell_git(
+                claim, "status", "--porcelain=v1", "-z", "--",
+                f"factory/route-plans/{claim['ticket']}.json",
+            )
+            existing = self.cell_git(
+                claim, "rev-parse", "--verify", diagnostic,
+            )
+            ref_valid = self.cell_git(claim, "check-ref-format", diagnostic)
+            if (
+                dirty.returncode or staged.returncode or unstaged.returncode
+                or not existing.stdout.strip()
+                and (
+                    set(staged.stdout.split("\0"))
+                    & set(unstaged.stdout.split("\0")) - {""}
+                )
+                or route_dirty.returncode or route_dirty.stdout
+                or ref_valid.returncode
+                or existing.returncode not in {0, 128}
+            ):
+                raise HandoffError("dirty role Git state is unavailable")
+            commit = existing.stdout.strip()
+            preview = None
+            if dirty.stdout:
+                preview = preview_handoff(
+                    claim["worktree"], role=role, policy=policy,
+                    expected_head=local, expected_branch=branch,
+                    remote="origin", remote_branch=branch,
+                    expected_remote_head=input_head,
+                    provider_scan_base=input_head,
+                    git_auth=git_auth,
+                )
+                if not preview.entries and not commit:
+                    raise HandoffError("dirty role snapshot is empty")
+            if commit:
+                commit_object = self.cell_git(
+                    claim, "cat-file", "commit", commit,
+                )
+                timestamp = str(
+                    int(terminal["terminal_at_epoch_ns"]) // 1_000_000_000
+                )
+                identity = re.fullmatch(
+                    r"tree [0-9a-f]{40}\n"
+                    rf"parent {re.escape(output_head)}\n"
+                    rf"author Nysa Failed Attempt Handoff <handoff@nysa[.]invalid> {timestamp} \+0000\n"
+                    rf"committer Nysa Failed Attempt Handoff <handoff@nysa[.]invalid> {timestamp} \+0000\n\n"
+                    rf"{re.escape(subject)}\n\n"
+                    r"Failed-Attempt-Snapshot: ([0-9a-f]{64})\n"
+                    rf"Transition-Receipt-SHA256: {claim['receipt']}\n"
+                    rf"Dirty-Role-Binding-SHA256: {binding}\n",
+                    commit_object.stdout,
+                )
+                if commit_object.returncode or identity is None:
+                    raise HandoffError("dirty role diagnostic identity is invalid")
+                snapshot = identity.group(1)
+                if validate_committed_output(
+                    Path(claim["worktree"]), baseline=output_head, head=commit,
+                    role=role, policy=policy,
+                ) != snapshot:
+                    raise HandoffError("dirty role diagnostic content is invalid")
+                preview_entries = preview.entries if preview is not None else ()
+
+                def tree_entry(revision: str, path: str) -> tuple[str, str] | None:
+                    result = self.cell_git(
+                        claim, "--literal-pathspecs", "ls-tree", "-z", revision,
+                        "--", path,
+                    )
+                    fields = result.stdout.partition("\t")[0].split()
+                    if result.returncode or fields and len(fields) != 3:
+                        raise HandoffError("dirty role partial restoration is invalid")
+                    return (fields[0], fields[2]) if fields else None
+
+                for entry in preview_entries:
+                    current = (
+                        None if entry.state == "deleted"
+                        else (entry.mode, entry.blob_oid)
+                    )
+                    if current not in {
+                        tree_entry(input_head, entry.path),
+                        tree_entry(commit, entry.path),
+                    }:
+                        raise HandoffError(
+                            "dirty role partial restoration state is invalid"
+                        )
+                staged_paths = {
+                    path for path in staged.stdout.split("\0") if path
+                }
+                for path in staged_paths:
+                    index_entry = self.cell_git(
+                        claim, "--literal-pathspecs", "ls-files", "--stage", "-z",
+                        "--", path,
+                    )
+                    metadata = index_entry.stdout.partition("\t")[0].split()
+                    malformed = bool(metadata) and (
+                        len(metadata) != 3 or metadata[2] != "0"
+                    )
+                    current = (
+                        (metadata[0], metadata[1])
+                        if metadata and not malformed else None
+                    )
+                    if (
+                        index_entry.returncode
+                        or malformed
+                        or current not in {
+                            tree_entry(input_head, path),
+                            tree_entry(output_head, path),
+                            tree_entry(commit, path),
+                        }
+                    ):
+                        raise HandoffError(
+                            "dirty role partial restoration index is invalid"
+                        )
+            else:
+                if preview is None or local != output_head:
+                    raise HandoffError("dirty role diagnostic ref is missing")
+                timestamp = (
+                    str(int(terminal["terminal_at_epoch_ns"]) // 1_000_000_000)
+                    + " +0000"
+                )
+                built = build_diagnostic_commit(
+                    preview, policy, commit_timestamp=timestamp, subject=subject,
+                    transition_receipt_sha256=claim["receipt"],
+                    binding_sha256=binding,
+                    git_auth=git_auth,
+                )
+                if validate_committed_output(
+                    Path(claim["worktree"]), baseline=output_head,
+                    head=built.commit,
+                    role=role, policy=policy,
+                ) != preview.snapshot_digest:
+                    raise HandoffError("dirty role diagnostic snapshot is invalid")
+                current = preview_handoff(
+                    claim["worktree"], role=role, policy=policy,
+                    expected_head=output_head, expected_branch=branch,
+                    remote="origin", remote_branch=branch,
+                    expected_remote_head=input_head,
+                    provider_scan_base=input_head,
+                    git_auth=git_auth,
+                )
+                if current != preview:
+                    raise HandoffError("dirty role snapshot drifted before preservation")
+                updated = self.cell_git(
+                    claim, "update-ref", diagnostic, built.commit, "0" * 40,
+                )
+                if updated.returncode:
+                    raise HandoffError("dirty role diagnostic ref could not be created")
+                commit = built.commit
+                snapshot = built.snapshot_digest
+            self.event_once(
+                "dirty_role_output_quarantined", claim["ticket"],
+                diagnostic_commit=commit, run_id=run_id,
+                snapshot_sha256=snapshot,
+            )
+            if dirty.stdout:
+                added = self.cell_git(
+                    claim, "diff", "--no-renames", "--name-status", "-z",
+                    output_head, commit, "--",
+                )
+                records = added.stdout.split("\0")
+                if records and records[-1] == "":
+                    records.pop()
+                if added.returncode or len(records) % 2:
+                    raise HandoffError("dirty role restoration paths are unavailable")
+                untracked = []
+                for status_code, path in zip(records[::2], records[1::2]):
+                    if status_code not in {"A", "D", "M"}:
+                        raise HandoffError("dirty role restoration path is invalid")
+                    if status_code == "A":
+                        untracked.append(path)
+                restored_paths = self.cell_git(
+                    claim, "read-tree", "--reset", "-u", input_head,
+                )
+                if restored_paths.returncode:
+                    raise HandoffError("dirty role worktree restoration failed")
+                if local == output_head and output_head != input_head:
+                    moved = self.cell_git(
+                        claim, "update-ref", f"refs/heads/{branch}",
+                        input_head, output_head,
+                    )
+                    if moved.returncode:
+                        raise HandoffError("dirty role branch restoration failed")
+                cleaned = (
+                    self.cell_git(
+                        claim, "--literal-pathspecs", "clean", "-f", "--", *untracked,
+                    ) if untracked else None
+                )
+                if cleaned is not None and cleaned.returncode:
+                    raise HandoffError("dirty role worktree restoration failed")
+            restored = self.cell_git(
+                claim, "status", "--porcelain=v1", "-z", "--untracked-files=all",
+            )
+            retained = self.cell_git(
+                claim, "rev-parse", "--verify", diagnostic,
+            )
+            final_head = self.cell_git(claim, "rev-parse", "HEAD")
+            if (
+                restored.returncode or restored.stdout
+                or retained.returncode or retained.stdout.strip() != commit
+                or final_head.returncode or final_head.stdout.strip() != input_head
+            ):
+                raise HandoffError("dirty role worktree restoration is incomplete")
+
     def failed_role_output_handoff(
         self, claim: dict[str, Any], terminal: dict[str, str], edge: dict[str, Any],
     ) -> bool:
@@ -12186,6 +12485,33 @@ class Controller:
             terminal.get("exit_status") != "0"
             or terminal.get("role_exit") != "ok"
         )
+        if not qualification_fallback and terminal_failed:
+            try:
+                dirty = self.cell_git(
+                    claim, "status", "--porcelain=v1", "-z",
+                    "--untracked-files=all",
+                )
+                if (
+                    dirty.returncode and not self.legacy_dispatch_fixture
+                    or terminal.get("role_exit") == "role_exit_dirty"
+                    or dirty.stdout
+                ):
+                    self.quarantine_dirty_role_output(claim, terminal)
+            except (
+                ControllerError, HandoffError, OSError,
+                subprocess.SubprocessError, UnicodeError,
+            ) as error:
+                self.latch_qualification_cohort_error()
+                self.block(
+                    claim, "dirty-role-output-refused:" + self.release_path.name,
+                )
+                self.event_once(
+                    "typed_recovery_refused", claim["ticket"],
+                    failed_run_id=terminal.get("run_id"),
+                    recovery_kind="dirty_role_output",
+                    reason=safe_error(str(error)),
+                )
+                return False
         if (
             not qualification_fallback
             and terminal.get("role_exit") != "role_exit_invalid_output"
