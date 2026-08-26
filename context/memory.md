@@ -11,6 +11,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - A submitted Claude individual or organization-monthly spend-limit terminal and a strict Cursor zero-turn usage-exhaustion terminal are release-typed, fully accounted, and qualification-latched before another role launch; Cursor missing-result and timeout terminals retain their bounded reason, and operator watch explains whether to restore capacity or inspect provider availability. Dirty role evidence stays blocked and unexported rather than becoming a secondary clean-cell controller error.
 - Any nonrecoverable role terminal in a fixed qualification cohort latches the same atomic launch boundary before the claim blocks or cancels; bounded invalid-output, prior-release launch-void, direct-model identity, and authenticated Cursor fallback recovery remain runnable, while already-admitted siblings only drain and account.
 - Qualification fallback and finish are ticket-independent within the sealed cohort: one candidate-scoped role attempt may fall back, but a replaced transition receipt cannot reopen that role before an intervening same-role success; a superseded direct preview names the latest unique run, evidence, and exact safe preview; explicit v1 fallback migrates atomically under the same approval, and blocked siblings do not starve an independent typed wait or approval. Aggregate same-head retry accepts only the safe current or legacy Factory `ci` template grammar.
+- An authenticated release-scoped qualification fallback refusal stops explicit preview and apply before readiness or mutation, names its claim evidence, and leaves only successor or fresh-cohort recovery; watch preserves the failed run across restart.
 - Recognized GitHub/Git transport loss is a typed wait, never a cohort defect. Exact remote confirmation and receipt/passport-bound replay resume post-provider role and publication commits without another model call; a disconnect inside a submitted provider attempt remains terminal-accounted and is not transport-replayed.
 - Successor qualification can preserve an exact source-passport checkpoint or descendant only through the protected in-flight release authorization; v2 binds each ticket's authenticated current source after a partial batch, migration never deletes or rewrites ticket work, and prior failed roles reopen only across an exact signed route-only migration suffix. A merged pin-only continuation closes with source-release evidence while retaining the protected successor pin.
 - Isolated successor contract repair may use an older authenticated blocker only through its complete signed release suffix ending at the exact protected per-ticket source. Prior resume pairs remain immutable transition history and are accepted only as an ordered canonical sequence with one signed completed record per pair and one newest in-branch snapshot of the full sequence. Passport snapshots may omit ordinary descendant ticket commits, while Factory/base/route junctions remain exact. During or after prior-kit receipt migration, the driver admits its historical resume mismatch only while the exact blocked claim and transition digest bind that selected ticket and receipt; event observation order is not authority.
@@ -8283,3 +8284,15 @@ A direct fallback preview for an older authenticated run remains fail-closed
 but names the latest unique ticket attempt, its manifest, the no-mutation
 impact, and the exact shell-safe preview command. Automatic qualification
 fallback continues to publish only its bounded refusal code.
+
+## 2026-08-25 — Decision 611: Exhausted fallback is release-scoped and actionable
+
+Category: Reliability
+
+An authenticated qualification fallback refusal blocks a new explicit preview
+before readiness or Git mutation only on the exact refusing Factory release.
+The CLI names the owner-only claim and states that no same-release preview
+exists; authenticated operator watch retains the failed run across restart and
+directs the developer to a certified successor or fresh cohort. Existing exact
+`fallback` apply replay remains on its ordinary idempotent recovery path. A
+different successor SHA remains eligible for its supported recovery.

@@ -395,6 +395,160 @@ fallback_python() {
   fi
 }
 
+qualification_fallback_guard() {
+  [[ "${FACTORY_KIT_TRUST_SCOPE:-}" == "qualification-candidate" ]] || return 0
+  [[ "$command_name" == "fallback-plan" ]] || return 0
+  local detail rc=0
+  detail="$(python3 -B - "${FACTORY_CONTROLLER_STATE_DIR:-}" "$ticket" \
+    "${FACTORY_RELEASE_SHA:-}" "$CONTROL_WORKDIR" "$CONTROL_BRANCH" <<'PY'
+import json, os, pathlib, re, stat, sys
+
+state_raw, ticket, release, workdir, branch = sys.argv[1:]
+state = pathlib.Path(state_raw)
+if (
+    not state.is_absolute()
+    or not re.fullmatch(r"T-[0-9]+", ticket)
+    or not re.fullmatch(r"[0-9a-f]{40}", release)
+):
+    raise SystemExit(4)
+claims = state / "claims"
+claim = claims / f"{ticket}.json"
+state_descriptor = claims_descriptor = claim_descriptor = -1
+try:
+    state_descriptor = os.open(
+        state,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    state_info = os.fstat(state_descriptor)
+    claims_descriptor = os.open(
+        "claims",
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        dir_fd=state_descriptor,
+    )
+    claims_info = os.fstat(claims_descriptor)
+    if (
+        not stat.S_ISDIR(state_info.st_mode)
+        or not stat.S_ISDIR(claims_info.st_mode)
+        or any(item.st_uid != os.geteuid() for item in (state_info, claims_info))
+        or stat.S_IMODE(state_info.st_mode) != 0o700
+        or stat.S_IMODE(claims_info.st_mode) != 0o700
+    ):
+        raise ValueError
+    try:
+        claim_descriptor = os.open(
+            f"{ticket}.json",
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=claims_descriptor,
+        )
+    except FileNotFoundError:
+        raise SystemExit(0)
+    before = os.fstat(claim_descriptor)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_uid != os.geteuid()
+        or stat.S_IMODE(before.st_mode) != 0o600
+        or before.st_nlink != 1
+        or before.st_size > 1_000_000
+    ):
+        raise ValueError
+    raw = os.read(claim_descriptor, 1_000_001)
+    after = os.fstat(claim_descriptor)
+    if (
+        len(raw) != before.st_size
+        or (before.st_dev, before.st_ino, before.st_size,
+            before.st_mtime_ns, before.st_ctime_ns)
+        != (after.st_dev, after.st_ino, after.st_size,
+            after.st_mtime_ns, after.st_ctime_ns)
+    ):
+        raise ValueError
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError
+            value[key] = item
+        return value
+    value = json.loads(raw.decode("utf-8", "strict"), object_pairs_hook=unique)
+except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(4)
+finally:
+    for descriptor in (claim_descriptor, claims_descriptor, state_descriptor):
+        if descriptor >= 0:
+            os.close(descriptor)
+if not isinstance(value, dict) or any(
+    not isinstance(value.get(key), str)
+    for key in (
+        "blocked_reason", "branch", "lease", "receipt", "role", "schema",
+        "status", "ticket", "worktree",
+    )
+):
+    raise SystemExit(4)
+parked = value.get("parked")
+if (
+    parked is not None and parked is not True
+    or "lease_released" in value
+    and not isinstance(value["lease_released"], bool)
+):
+    raise SystemExit(4)
+match = re.fullmatch(
+    r"qualification-fallback-refused:"
+    r"(readiness|manifest|attempt_count|handoff|route_policy|provenance|unknown):"
+    r"([0-9a-f]{40})",
+    value["blocked_reason"],
+)
+released = (
+    (
+        re.fullmatch(r"[0-9a-f]{64}", value.get("lease", "")) is not None
+        and value.get("lease_released") is True
+    ) or (
+        value.get("parked") is True
+        and value.get("lease") == ""
+        and "lease_released" not in value
+    )
+)
+if (
+    not isinstance(value, dict)
+    or value.get("schema") != "nysa.software-factory.controller-claim/v1"
+    or value.get("ticket") != ticket
+    or value.get("worktree") != workdir
+    or value.get("branch") != branch
+    or parked is True and (
+        pathlib.Path(workdir).name != ticket
+        or pathlib.Path(workdir).parent.name != "parked"
+    )
+    or not re.fullmatch(r"[0-9a-f]{64}", value.get("receipt", ""))
+    or value.get("role") not in {
+        "planner", "spec-linter", "test-author", "builder", "reviewer", "narrator",
+    }
+    or value.get("status") != "blocked"
+    or not released
+):
+    raise SystemExit(4)
+if match is None:
+    if str(value.get("blocked_reason", "")).startswith(
+        "qualification-fallback-refused:"
+    ):
+        raise SystemExit(4)
+    raise SystemExit(0)
+if match.group(2) == release:
+    print(
+        f"qualification fallback is exhausted ({match.group(1)}); "
+        f"impact=this ticket cannot resume on Factory {release}; "
+        f"evidence={claim}; recovery_command=none; "
+        "certify a successor release or start a fresh cohort"
+    )
+    raise SystemExit(3)
+PY
+)" || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    3) json_error "$detail" ;;
+    *) json_error "qualification fallback claim is unsafe" ;;
+  esac
+}
+
 control_git() {
   local workdir="$1"
   shift
@@ -1419,9 +1573,10 @@ PY
     [[ -z "$allow_reviewer_family" ]] ||
       fallback_exception_args+=(--allow-reviewer-family "$allow_reviewer_family")
     validate_control_workdir "$ticket" "$workdir" 1
-    prepare_github_git_auth
     [[ -f "$CONTROL_PLAN_FILE" && ! -L "$CONTROL_PLAN_FILE" ]] ||
       json_error "ticket route document is missing or unsafe"
+    qualification_fallback_guard
+    prepare_github_git_auth
     profile_id="$(python3 - "$CONTROL_PLAN_FILE" "$command_name" <<'PY'
 import base64, json, sys
 value = json.load(open(sys.argv[1]))

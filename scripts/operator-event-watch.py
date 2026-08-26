@@ -330,6 +330,7 @@ def action_event(
     elif event == "typed_recovery_refused":
         recovery = source.get("recovery_kind")
         code = source.get("reason")
+        failed_run = source.get("failed_run_id")
         if (
             not isinstance(recovery, str)
             or recovery not in TYPED_RECOVERY_KINDS
@@ -337,6 +338,9 @@ def action_event(
             or (
                 recovery == "qualification_fallback"
                 and code not in QUALIFICATION_FALLBACK_REASONS
+            )
+            or failed_run is not None and (
+                not isinstance(failed_run, str) or not RUN.fullmatch(failed_run)
             )
         ):
             raise WatchError("operator recovery context is invalid")
@@ -346,7 +350,22 @@ def action_event(
             if recovery == "qualification_fallback"
             else f"{recovery}:refused"
         )
-        question = "Inspect the terminal recovery refusal before choosing a supported repair."
+        if recovery == "qualification_fallback":
+            source = dict(source)
+            source["run_id"] = failed_run
+            question = (
+                "One automatic qualification fallback is exhausted. "
+                if code == "attempt_count" else
+                f"Automatic qualification fallback stopped at {code}. "
+            ) + (
+                "This release cannot resume the ticket. Use the failed run and "
+                "source-event digest as evidence; no same-release command exists. "
+                "Certify a successor release or start a fresh cohort."
+            )
+        else:
+            question = (
+                "Inspect the terminal recovery refusal before choosing a supported repair."
+            )
     elif event == "ticket_recovery_abandoned":
         recovery = source.get("recovery")
         attempts = source.get("attempts")
