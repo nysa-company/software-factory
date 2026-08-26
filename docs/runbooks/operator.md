@@ -360,6 +360,10 @@ runs a fresh Doctor; the authenticated contract-recovery boundary keeps its
 explicit Doctor refresh.
 An initial `doctor_not_ready` result includes the exact sanitized Doctor report
 so the failed check remains diagnosable without repeating the sealed command.
+If a replay finds only a fully consistent live-role shape, it instead returns
+`active_role_wait`, the Doctor evidence, and the exact `retry_argv`. It does not
+reconcile or start another provider attempt. Replay that command after
+`active_runs=active_run_claims=active_attempts=0`.
 For the exact authenticated successor compact-repair warning, it also projects
 the one-use qualification resume receipt after the sealed repair check. It does
 not create a product audit commit or grant the production controller authority
