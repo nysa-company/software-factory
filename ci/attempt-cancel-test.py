@@ -1465,7 +1465,9 @@ class AttemptCancellationTest(unittest.TestCase):
                     CANCEL.apply_plan(self.root, plan, 1)
                 wrapper.unlink()
                 submitted.symlink_to(self.runs / "run-1.meta")
-                with self.assertRaisesRegex(CANCEL.CancelError, "identity disagrees"):
+                with self.assertRaisesRegex(
+                    CANCEL.CancelError, "unsafe stale attempt record",
+                ):
                     CANCEL.apply_plan(self.root, plan, 1)
                 submitted.unlink()
                 provider_runtime = runtime_root / "attempts" / attempt_id
