@@ -19,7 +19,7 @@ Initiative: I-001
 Priority: none
 EOF
 cat > "$PRODUCT/factory/operator-map.json" <<'EOF'
-{"tickets":{"T-700":{"operator":{"state":"Ready","priority":"high","observed_at":"2026-07-15T00:00:00Z"}}}}
+{"_config":{},"_sync":{},"initiatives":{},"tickets":{"T-700":{"operator":{"state":"Ready","priority":"high","observed_at":"2026-07-15T00:00:00Z"}}}}
 EOF
 printf 'factory/operator-map.json\nfactory/.operator-map.lock\nfactory/.operator-clears/\n' > "$PRODUCT/.gitignore"
 git -C "$PRODUCT" init -q -b ticket/T-700
@@ -87,10 +87,38 @@ ticket_state \
 [[ -f "$TMP/volatile-refreshed" ]]
 grep -q '^State: Ready$' "$PRODUCT/factory/tickets/T-700.md"
 grep -q '^Priority: high$' "$PRODUCT/factory/tickets/T-700.md"
+python3 - "$PRODUCT/factory/.operator-map.lock" <<'PY'
+import os, stat, sys
+value = os.lstat(sys.argv[1])
+assert stat.S_ISREG(value.st_mode)
+assert value.st_uid == os.geteuid()
+assert value.st_nlink == 1
+assert stat.S_IMODE(value.st_mode) == 0o600
+PY
 python3 - "$PRODUCT/factory/operator-map.json" <<'PY'
 import json, sys
 assert "operator" not in json.load(open(sys.argv[1]))["tickets"]["T-700"]
 PY
+mkdir -m 700 "$TMP/operator-state"
+python3 -I "$ROOT/scripts/operator-cli.py" --product "$PRODUCT" \
+  --state-dir "$TMP/operator-state" init --ticket T-700 >/dev/null
+
+LOCK="$PRODUCT/factory/.operator-map.lock"
+MAP_BEFORE="$(shasum -a 256 "$PRODUCT/factory/operator-map.json")"
+HEAD_BEFORE="$(git -C "$PRODUCT" rev-parse HEAD)"
+chmod 0644 "$LOCK"
+if ticket_state --ticket T-700 --workdir "$PRODUCT" \
+    --action materialize >/dev/null 2>&1; then
+  echo "FAIL: ticket-state accepted an unsafe operator map lock" >&2
+  exit 1
+fi
+python3 - "$LOCK" <<'PY'
+import os, stat, sys
+assert stat.S_IMODE(os.stat(sys.argv[1]).st_mode) == 0o644
+PY
+[[ "$(shasum -a 256 "$PRODUCT/factory/operator-map.json")" == "$MAP_BEFORE" ]]
+[[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$HEAD_BEFORE" ]]
+chmod 0600 "$LOCK"
 
 printf '{"tickets":{"T-700":{"operator":{"initiative":null}}}}\n' \
   > "$PRODUCT/factory/operator-map.json"
