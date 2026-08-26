@@ -22143,8 +22143,9 @@ class FactoryControllerTest(unittest.TestCase):
         )
         controller.save_claim(claim)
         controller.qualification = {
-            "mode": "successor", "source_factory_sha": source,
+            "generation": 1, "mode": "successor", "source_factory_sha": source,
         }
+        controller.qualification_manifest_sha256 = "2" * 64
         controller.role_active = lambda _claim: False
         controller.remote_passport_valid = lambda _claim: True
         controller.terminal_for_receipt = lambda *_args: {
@@ -22187,6 +22188,16 @@ class FactoryControllerTest(unittest.TestCase):
             "T-216", "planner", "operator", plan["approval_hash"],
         )
         self.assertEqual(result["status"], "applied")
+        applied = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path).get("event")
+            == "contract_repair_directive_applied"
+        ]
+        self.assertEqual(len(applied), 1)
+        self.assertEqual(
+            (applied[0]["blocked_receipt_sha256"], applied[0]["repair_head"]),
+            (transition["receipt_sha256"], result["repair_head"]),
+        )
         self.assertEqual(lease_events, [
             ("ensure", "contract-repair"), ("apply", "contract-repair"),
             ("release", "contract-repair"),
@@ -22214,6 +22225,11 @@ class FactoryControllerTest(unittest.TestCase):
             "T-216", "planner", "operator", plan["approval_hash"],
         )
         self.assertEqual(replay["repair_head"], result["repair_head"])
+        self.assertEqual(sum(
+            CONTROL.read(path).get("event")
+            == "contract_repair_directive_applied"
+            for path in controller.events.glob("*.json")
+        ), 1)
         self.assertEqual(lease_events, [
             ("ensure", "contract-repair"), ("apply", "contract-repair"),
             ("release", "contract-repair"),

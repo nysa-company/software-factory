@@ -278,6 +278,10 @@ It derives the resume stage from the authenticated repair check, projects only
 that selected ticket's blocked-receipt-bound one-use authority, and writes no
 product audit commit. That exact new authority rearms one abandoned targeted
 recovery attempt; an unchanged receipt cannot reopen recovery repeatedly.
+The exact contract-repair apply records a receipt- and repair-head-bound
+resolution event after its lease is released. That clears any older refusal for
+the ticket; a later refusal warns again, and apply replay does not duplicate the
+resolution event.
 Takeover and production launchers refuse it.
 If a contract-blocked Test-author cannot satisfy the frozen tests-first history
 shape without deleting evidence, an isolated successor may run:

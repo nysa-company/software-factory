@@ -596,7 +596,10 @@ from qualification_artifacts import (  # noqa: E402
     authenticated_passport,
 )
 from legacy_closeout import validate_protected_artifact_batches  # noqa: E402
-resolved = {"contract_blocker_recovered", "recorded_contract_repair_prepared"}
+resolved = {
+    "contract_blocker_recovered", "contract_repair_directive_applied",
+    "recorded_contract_repair_prepared",
+}
 transition_terminal = {"ticket_complete", "ticket_released", "ticket_retired"}
 transition_prior_migrated = {
     "passportless_route_migration_recovered", "route_migration_cleared",
@@ -813,6 +816,28 @@ try:
                 if (key in incident and incident[key] not in {None, ""}
                         and not re.fullmatch(r"[0-9a-f]{40}", incident[key])):
                     raise ValueError
+        elif event == "contract_repair_directive_applied":
+            fields = base_fields | {"blocked_receipt_sha256", "repair_head"}
+            qualified = set(value) == fields | qualification_fields
+            if (
+                set(value) != fields
+                and not (
+                    qualified
+                    and isinstance(value.get("qualification_generation"), int)
+                    and not isinstance(value["qualification_generation"], bool)
+                    and value["qualification_generation"] > 0
+                    and re.fullmatch(
+                        r"[0-9a-f]{64}",
+                        value.get("qualification_manifest_sha256", ""),
+                    )
+                )
+                or not re.fullmatch(
+                    r"[0-9a-f]{64}", value.get("blocked_receipt_sha256", "")
+                )
+                or not re.fullmatch(r"[0-9a-f]{40}", value.get("repair_head", ""))
+            ):
+                raise ValueError
+            incident = None
         elif event in resolved:
             incident = None
         elif event == "prior_kit_transition_receipt_observed":

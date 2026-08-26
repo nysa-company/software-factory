@@ -8375,3 +8375,12 @@ final completed agent message is the sole verdict-bearing message. Tool output,
 unknown or malformed JSON, ambiguous messages, failed turns, unsafe size, and
 post-terminal data are never review authority. Plain legacy review text remains
 accepted only when no native event stream is established.
+
+## 2026-08-26 — Decision 619: Exact contract-repair apply resolves prior refusals
+
+Category: Reliability
+
+A successful exact contract-repair apply emits one idempotent resolution event
+bound to the blocked receipt and repair head after releasing its lease. Doctor
+clears older refusal events for that ticket while a later refusal warns again.
+The lifecycle resume remains a separate exact repair-check boundary.
