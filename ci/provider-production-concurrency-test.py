@@ -242,6 +242,123 @@ capture_submission_record
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_cli_attempt_status_read_retries_without_relaxing_validation(self) -> None:
+        self.apply()
+        attempt = "status-retry-1"
+        self.reserve(attempt, "openai", "codex-native")
+        policy_hash = json.loads(
+            (self.state / "isolated-v1.enabled").read_text(encoding="utf-8")
+        )["policy_sha256"]
+        counter = self.root / "status-reads"
+        counter.write_text("0\n")
+        script = f"""
+set -euo pipefail
+eval "$(sed -n '/^load_cli_attempt()/,/^release_cursor_account_lease()/p' \
+  '{RUN_AGENT}' | sed '$d')"
+REAL_PYTHON='{sys.executable}'
+COUNTER='{counter}'
+CLI_ATTEMPT_ID='{attempt}'
+FACTORY_PROVIDER_DB='{self.state}/accounting/state-v2.sqlite3'
+KIT_DIR='{ROOT}'
+SELECTED_FAMILY=openai
+SELECTED_ACCOUNT_ROUTE_ID=codex-native
+PROVIDER_BUDGET_MICRO_VALUES=(1 10 10 10)
+CLI_PRODUCT_ID=product
+TICKET=T-1
+TODAY=2026-07-29
+ACTIVATED_POLICY_HASH='{policy_hash}'
+python3() {{
+  if [[ "$1" == "$KIT_DIR/scripts/provider-coordinator.py" &&
+        "$*" == *' status --attempt-id '* ]]; then
+    count="$(cat "$COUNTER")"
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$COUNTER"
+    [[ "$count" -ge 3 ]] || return 1
+  fi
+  "$REAL_PYTHON" "$@"
+}}
+load_cli_attempt
+[[ "$CLI_ATTEMPT_STATE" == reserved && "$(cat "$COUNTER")" == 3 ]]
+printf '0\n' >"$COUNTER"
+SELECTED_ACCOUNT_ROUTE_ID=foreign
+! load_cli_attempt
+[[ "$(cat "$COUNTER")" == 3 ]]
+"""
+        result = subprocess.run(
+            ["/bin/bash", "-c", script], capture_output=True, check=False,
+            text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_cleanup_retains_complete_supported_recovery_unit(self) -> None:
+        script = f"""
+set -euo pipefail
+eval "$(sed -n '/^has_cli_orphan_recovery_records()/,/^}}/p;
+  /^cleanup()/,/^}}/p' '{RUN_AGENT}' | sed '/exec 8<&-/d')"
+RUN_WRAPPER_FILE='{self.root}/run.wrapper'
+RUN_SUBMITTED_FILE='{self.root}/.run.submitted'
+RUN_PID_FILE='{self.root}/run.pid'
+MANIFEST='{self.root}/run.meta'
+ACTIVE_RUN_FILE='{self.root}/active-run'
+ACTIVE_RUN_EXPECTED=expected-owner
+printf 'wrapper\n' >"$RUN_WRAPPER_FILE"
+printf 'submitted\n' >"$RUN_SUBMITTED_FILE"
+printf 'pid\n' >"$RUN_PID_FILE"
+printf 'manifest\n' >"$MANIFEST"
+mkdir "$ACTIVE_RUN_FILE"
+printf '%s\n' "$ACTIVE_RUN_EXPECTED" >"$ACTIVE_RUN_FILE/owner"
+RUN_GROUP_TERMINATED=1
+CLI_ATTEMPT_ACTIVE=1
+CLI_CONCURRENT_RUN=1
+MANIFEST_PHASE=spawned
+ACCOUNTING_STATE=reserved
+ROLE_GUARD_ROOT=
+LEASE_HEARTBEAT_PID=
+RUN_READY_FILE=
+RUN_GO_FILE=
+RUN_GATE_FILE=
+RUN_OUTPUT_TEMP=
+HELD_LEDGER_LOCK=0
+HELD_GLOBAL_LOCK=0
+GLOBAL_LEDGER_SNAPSHOT=
+LOCK_DIR='{self.root}/ledger.lock'
+LEGACY_INTERVAL_ACTIVE=0
+HELD_PROVIDER_LOCK=0
+RETAIN_PROVIDER_LOCK=0
+HELD_LAUNCH_LOCK=0
+LAUNCH_LOCK='{self.root}/launch.lock'
+OWNS_ACTIVE_RUN=1
+stop_lease_heartbeat() {{ :; }}
+terminate_run_group() {{ RUN_GROUP_TERMINATED=1; }}
+release_cursor_account_lease() {{ :; }}
+cleanup_cli_runtime() {{ :; }}
+capture_submission_record() {{ return 1; }}
+release_active_run_claim() {{ return 99; }}
+cleanup || true
+[[ -f "$RUN_WRAPPER_FILE" && -f "$RUN_SUBMITTED_FILE" &&
+   -f "$RUN_PID_FILE" && -f "$ACTIVE_RUN_FILE/owner" &&
+   "$(cat "$ACTIVE_RUN_FILE/owner")" == "$ACTIVE_RUN_EXPECTED" ]]
+rm -f "$RUN_SUBMITTED_FILE"
+release_active_run_claim() {{
+  rm -f "$ACTIVE_RUN_FILE/owner"
+  rmdir "$ACTIVE_RUN_FILE"
+  OWNS_ACTIVE_RUN=0
+}}
+cleanup || true
+[[ ! -e "$RUN_WRAPPER_FILE" && ! -e "$ACTIVE_RUN_FILE" ]]
+"""
+        result = subprocess.run(
+            ["/bin/bash", "-c", script], capture_output=True, check=False,
+            text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        source = RUN_AGENT.read_text(encoding="utf-8")
+        heartbeat = source[
+            source.index("stop_lease_heartbeat()"):
+            source.index("verify_control_interval_integrity()")
+        ]
+        self.assertIn("has_cli_orphan_recovery_records", heartbeat)
+
     def test_failed_reserve_cannot_terminalize_conflicting_attempt(self) -> None:
         self.apply()
         attempt = "foreign-attempt"
@@ -447,13 +564,15 @@ accounting_intent_is_durable
 [[ "$FINAL_ACCOUNTING_STATE" == launch_void && "$FINAL_PHASE" == abandoned &&
    "$COST" == 0 && "$EXIT_STATUS" == 3 &&
    "$CLI_TERMINAL_RESULT" == failed_pre_go ]]
-eval "$(sed -n '/^cleanup()/,/^}}/p' '{RUN_AGENT}' | sed '/exec 8<&-/d')"
+eval "$(sed -n '/^has_cli_orphan_recovery_records()/,/^}}/p;
+  /^cleanup()/,/^}}/p' '{RUN_AGENT}' | sed '/exec 8<&-/d')"
 set +e
 PID_FIXTURE='{self.root}/retained.pid'
 RUN_PID_FILE="$PID_FIXTURE"
 : >"$RUN_PID_FILE"
 RUN_GROUP_TERMINATED=1
 CLI_ATTEMPT_ACTIVE=1
+CLI_CONCURRENT_RUN=1
 ROLE_GUARD_ROOT=
 RUN_WRAPPER_FILE=
 LEASE_HEARTBEAT_PID=

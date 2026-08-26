@@ -365,10 +365,17 @@ def orphan_evidence(
     ):
         raise CancelError("orphan heartbeat identity is stale or mismatched")
     attempt_id = manifest.get("provider_attempt_id", "")
+    manifest_submitted = manifest.get("submitted_at_epoch_ns", "")
     if (
         manifest.get("go_issued") != "1"
-        or manifest.get("task_submitted") != "0"
-        or manifest.get("submitted_at_epoch_ns", "")
+        or manifest.get("task_submitted") not in {"0", "1"}
+        or (
+            manifest.get("task_submitted") == "0" and manifest_submitted
+        )
+        or (
+            manifest.get("task_submitted") == "1"
+            and not re.fullmatch(r"[1-9][0-9]{0,19}", manifest_submitted)
+        )
         or not IDENTITY.RUN_ID.fullmatch(attempt_id)
     ):
         return None
@@ -382,6 +389,11 @@ def orphan_evidence(
         or not valid_submitted_attempt(attempt)
     ):
         raise CancelError("orphan provider submission is invalid")
+    if (
+        manifest.get("task_submitted") == "1"
+        and int(manifest_submitted) != canonical_submission_ns(attempt)
+    ):
+        raise CancelError("orphan provider submission disagrees with the run manifest")
     submitted_path = factory_root / f"factory/runs/.{run_id}.submitted"
     submitted_raw = secure_record(submitted_path, "submission sidecar")
     submitted = IDENTITY.parse_fields(submitted_raw, "submission sidecar")
