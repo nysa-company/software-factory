@@ -2122,6 +2122,44 @@ def converge_provider_attempt(
         and not isinstance(bound.get("submitted_at"), bool)
         and submitted_at == bound["submitted_at"]
     )
+    terminal_at = status.get("terminal_at")
+    legacy_provider_state = (
+        status.get("state") == "submitted" and status.get("version") == 4
+    ) or (
+        status.get("state") == "terminal" and status.get("version") == 5
+        and status.get("terminal_result") == "cancelled"
+        and status.get("charge_micro_usd") == status.get("reserve_micro_usd")
+        and isinstance(terminal_at, int) and not isinstance(terminal_at, bool)
+        and terminal_at == status.get("updated_at")
+        and isinstance(submitted_at, int) and not isinstance(submitted_at, bool)
+        and terminal_at >= submitted_at
+    )
+    cross_release_submission = (
+        plan.get("schema") == PLAN_SCHEMA
+        and plan.get("go_issued") == "1"
+        and manifest.get("contract_version") == "2.0.0"
+        and manifest.get("kit_sha") == source_sha
+        and manifest.get("ticket_kit_sha") == source_sha
+        and manifest.get("provider_product_id") == legacy_product_id
+        and status.get("product_id") == legacy_product_id
+        and manifest.get("go_issued") == "1"
+        and manifest.get("task_submitted") == "0"
+        and "submitted_at_epoch_ns" in manifest
+        and manifest["submitted_at_epoch_ns"] == ""
+        and isinstance(submitted_at, int)
+        and not isinstance(submitted_at, bool)
+        and valid_submitted_attempt(status)
+        and legacy_provider_state
+        and not any(
+            path.exists() or path.is_symlink()
+            for path in (
+                factory_root / f"factory/runs/{plan['run_id']}.wrapper",
+                factory_root / f"factory/runs/.{plan['run_id']}.submitted",
+            )
+        )
+        and orphan_runtime_evidence(attempt_id) is None
+        and sealed_recovery_locks_held(manifest)
+    )
     if (
         status.get("attempt_id") != attempt_id
         or status.get("ticket_id") != plan["ticket"]
@@ -2146,15 +2184,18 @@ def converge_provider_attempt(
         or (
             (manifest.get("task_submitted") == "1") != isinstance(submitted_at, int)
             and not legacy_identity and not orphan_submission
+            and not cross_release_submission
         )
         or (isinstance(submitted_at, int) and not isinstance(go_at, int))
         or (
             (submitted_value is None) != (submitted_at is None)
             and not legacy_identity and not orphan_submission
+            and not cross_release_submission
         )
         or (
             isinstance(submitted_at, int)
             and not legacy_identity and not orphan_submission
+            and not cross_release_submission
             and not submitted_at * 1_000_000_000
             <= submitted_value
             <= (submitted_at + 1) * 1_000_000_000 - 1
@@ -2162,7 +2203,7 @@ def converge_provider_attempt(
         or status.get("reserve_micro_usd") != micro_usd(manifest["reserved_usd"])
     ):
         raise CancelError("provider attempt identity disagrees with the run")
-    if orphan_submission:
+    if orphan_submission or cross_release_submission:
         manifest["task_submitted"] = "1"
         manifest["submitted_at_epoch_ns"] = str(canonical_submission_ns(status))
     intent = terminal_intent(manifest)
