@@ -9968,6 +9968,10 @@ class Controller:
             "contract repair",
         )
         self.release_ticket_lease(claim)
+        self.event_once(
+            "contract_repair_directive_applied", ticket,
+            blocked_receipt_sha256=plan["blocked_receipt"], repair_head=head,
+        )
         return {
             "approval_hash": approve_hash, "repair_head": head,
             "schema": SCHEMA, "status": "applied", "ticket": ticket,

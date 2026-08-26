@@ -850,33 +850,51 @@ chmod 700 "$TMP/qualification-controller" "$TMP/qualification-controller/events"
 python3 - "$TMP/qualification-controller/events/recovered.json" "$SHA_B" <<'PY'
 import hashlib, json, os, pathlib, sys
 path, factory = pathlib.Path(sys.argv[1]), sys.argv[2]
-value = {
-    "event": "upgraded_claim_recovered",
-    "factory_sha": factory,
-    "from_factory_sha": factory,
-    "observed_at_epoch_ns": 1,
-    "qualification_generation": 1,
-    "qualification_manifest_sha256": "a" * 64,
-    "schema": "nysa.software-factory.controller-event/v1",
-    "ticket": "T-1",
-}
-value["event_sha256"] = hashlib.sha256(json.dumps(
-    value, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
-).encode()).hexdigest()
-path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
-os.chmod(path, 0o600)
+
+def write(name, epoch, **details):
+    value = {
+        "event": name, "factory_sha": factory,
+        "observed_at_epoch_ns": epoch, "qualification_generation": 1,
+        "qualification_manifest_sha256": "a" * 64,
+        "schema": "nysa.software-factory.controller-event/v1",
+        "ticket": "T-1", **details,
+    }
+    value["event_sha256"] = hashlib.sha256(json.dumps(
+        value, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    target = path.parent / f"{epoch}-{name}.json"
+    target.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(target, 0o600)
+    return target
+
+write(
+    "contract_resume_refused", 1, blocked_receipt_sha256="c" * 64,
+    reason_code="resume_directives_ambiguous",
+)
+write(
+    "contract_repair_directive_applied", 2,
+    blocked_receipt_sha256="c" * 64, repair_head="b" * 40,
+)
+write("upgraded_claim_recovered", 3, from_factory_sha=factory)
+write(
+    "contract_resume_refused", 4, blocked_receipt_sha256="d" * 64,
+    local_head="b" * 40, reason_code="resume_commit_not_pushed",
+    remote_head="a" * 40,
+).rename(path.parent.parent / "later-contract-refusal.json")
 PY
-HOME="$TEST_HOME" PATH="$TEST_BIN:/usr/bin:/bin" \
-  FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
-  FACTORY_DOCTOR_TIMEOUT_SECONDS=1 \
-  FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS=5 \
-  FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
-  FACTORY_CONTROLLER_STATE_DIR="$TMP/qualification-controller" \
-  FACTORY_PROVIDER_POLICY="$TMP/provider/provider-policy.json" \
-  /bin/bash "$RELEASE_B/scripts/factory-doctor-real.sh" --json \
-    --project "$PROJECT" --kit-dir "$RELEASE_B" \
-    --product-root "$PRODUCT" --kit-sha "$SHA_B" \
-    > "$TMP/qualification-recovered-doctor.json"
+qualification_contract_doctor() {
+  HOME="$TEST_HOME" PATH="$TEST_BIN:/usr/bin:/bin" \
+    FACTORY_TEST_MODE=1 FACTORY_TRUSTED_TEST_HARNESS=1 \
+    FACTORY_DOCTOR_TIMEOUT_SECONDS=1 \
+    FACTORY_DOCTOR_READINESS_TIMEOUT_SECONDS=5 \
+    FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+    FACTORY_CONTROLLER_STATE_DIR="$TMP/qualification-controller" \
+    FACTORY_PROVIDER_POLICY="$TMP/provider/provider-policy.json" \
+    /bin/bash "$RELEASE_B/scripts/factory-doctor-real.sh" --json \
+      --project "$PROJECT" --kit-dir "$RELEASE_B" \
+      --product-root "$PRODUCT" --kit-sha "$SHA_B"
+}
+qualification_contract_doctor > "$TMP/qualification-recovered-doctor.json"
 python3 - "$TMP/qualification-recovered-doctor.json" <<'PY'
 import json, sys
 checks = json.load(open(sys.argv[1], encoding="utf-8"))["checks"]
@@ -884,6 +902,24 @@ assert checks["contract_resume"] == {"incidents": [], "status": "ok"}
 assert checks["transition_receipts"] == {"incidents": [], "status": "ok"}
 assert checks["authenticated_artifacts"] == {
     "reason_code": None, "status": "ok",
+}
+PY
+mv "$TMP/qualification-controller/later-contract-refusal.json" \
+  "$TMP/qualification-controller/events/4-contract_resume_refused.json"
+qualification_contract_doctor > "$TMP/qualification-later-refusal-doctor.json"
+python3 - "$TMP/qualification-later-refusal-doctor.json" <<'PY'
+import json, sys
+checks = json.load(open(sys.argv[1], encoding="utf-8"))["checks"]
+assert checks["contract_resume"] == {
+    "incidents": [{
+        "blocked_receipt_sha256": "d" * 64,
+        "local_head": "b" * 40,
+        "observed_at_epoch_ns": 4,
+        "reason_code": "resume_commit_not_pushed",
+        "remote_head": "a" * 40,
+        "ticket": "T-1",
+    }],
+    "status": "warning",
 }
 PY
 
