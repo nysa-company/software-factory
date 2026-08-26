@@ -112,7 +112,10 @@ if ticket_state --ticket T-700 --workdir "$PRODUCT" \
   echo "FAIL: ticket-state accepted an unsafe operator map lock" >&2
   exit 1
 fi
-[[ "$(stat -f '%Lp' "$LOCK")" == "644" ]]
+python3 - "$LOCK" <<'PY'
+import os, stat, sys
+assert stat.S_IMODE(os.stat(sys.argv[1]).st_mode) == 0o644
+PY
 [[ "$(shasum -a 256 "$PRODUCT/factory/operator-map.json")" == "$MAP_BEFORE" ]]
 [[ "$(git -C "$PRODUCT" rev-parse HEAD)" == "$HEAD_BEFORE" ]]
 chmod 0600 "$LOCK"
