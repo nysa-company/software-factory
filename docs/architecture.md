@@ -607,7 +607,9 @@ For an active product with a certified Node/npm tuple, each isolated CLI home
 also carries a final zsh login hook. It restores the launcher's exact task PATH
 after macOS `path_helper` runs and exits before the requested product command
 when either runtime version differs; the provider CLI's own bundled runtime is
-outside this check.
+outside this check. Runtime validation resolves Node and npm through the
+certified pre-policy PATH, then leaves the Planner's package-command guard at
+the front of the task PATH.
 Its trusted ticket-state reconciliation binds a successful Reviewer's
 read-only head and durable output digest, records the canonical verdict and
 explicit repair owner, and commits a rejection's Review-to-Building transition
