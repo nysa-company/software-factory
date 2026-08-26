@@ -1713,6 +1713,9 @@ protected mutation remain forbidden. If later successors have already migrated
 that passport, recovery additionally requires one continuous authenticated v2
 suffix from the failed role input to the current passport, with every
 head-changing edge revalidated as an exact Factory route-migration commit.
+Planner repair reruns preserve prior Spec-linter verdicts and planning epochs
+byte-for-byte; only Spec-linter appends verdicts, while Planner answers each
+material FAIL finding through one higher-numbered frozen-contract epoch.
 See [factory-runtime.md](factory-runtime.md) for the schemas and commands.
 
 Ticket content is read from the launcher's validated ticket worktree, while

@@ -8316,3 +8316,13 @@ validates its regular-file, owner, single-link, and exact-mode identity before
 locking. Unsafe existing locks remain untouched and fail closed. Qualification
 resume checks a refused operator projection before parsing output so operators
 receive the stable refusal instead of a misleading JSON error.
+
+## 2026-08-26 — Decision 614: Planner repairs preserve Spec-linter ownership
+
+Category: Reliability
+
+Planner reruns after a Spec-linter FAIL preserve every prior verdict and
+planning epoch byte-for-byte. Only Spec-linter appends verdicts; Planner
+answers each material finding through one higher-numbered frozen-contract
+epoch. The existing wrapper quarantine remains fail-closed for forged or
+rewritten verdict evidence.
