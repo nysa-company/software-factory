@@ -209,8 +209,15 @@ def materialize_pre_dispatch(
     expected_base_sha: str = "",
 ) -> None:
     ticket = receipt["ticket"]
-    if git(product, "symbolic-ref", "--quiet", "--short", "HEAD") != "main":
-        raise OperatorCliError("operator lifecycle write requires the main checkout")
+    registered_branch = git(
+        product, "symbolic-ref", "--quiet", "--short", "HEAD", check=False,
+    )
+    if registered_branch not in {"", "main"}:
+        raise OperatorCliError(
+            "operator lifecycle write requires main or detached protected main; "
+            "recovery: git fetch origin main && "
+            "git switch --detach refs/remotes/origin/main"
+        )
     if git(product, "status", "--porcelain=v1", "-z"):
         raise OperatorCliError("operator lifecycle write requires a clean checkout")
     origins = git(product, "remote", "get-url", "--push", "--all", "origin").splitlines()
@@ -222,6 +229,13 @@ def materialize_pre_dispatch(
     prefix = ticket_branch_prefix(product / "factory")
     branch = f"{prefix}{ticket}"
     git(product, "fetch", "--quiet", "origin", "+main:refs/remotes/origin/main")
+    if not expected_base_sha and git(product, "rev-parse", "HEAD") != git(
+        product, "rev-parse", "refs/remotes/origin/main",
+    ):
+        raise OperatorCliError(
+            "operator lifecycle write requires exact protected origin/main; "
+            "recovery: git switch --detach refs/remotes/origin/main"
+        )
     git(
         product, "fetch", "--quiet", "origin",
         f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
