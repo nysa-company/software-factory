@@ -30,6 +30,7 @@ MAX_EVENT_BYTES = 1_000_000
 MAX_CURSOR_BYTES = 1024
 TIMEOUT_REASONS = frozenset({"hard_timeout", "invalid_progress", "soft_timeout"})
 TYPED_RECOVERY_KINDS = frozenset({
+    "dirty_role_output",
     "model_identity_delivery", "model_identity_success",
     "qualification_fallback",
 })
@@ -344,6 +345,9 @@ def action_event(
             )
         ):
             raise WatchError("operator recovery context is invalid")
+        if failed_run is not None:
+            source = dict(source)
+            source["run_id"] = failed_run
         action = "blocked_escalated"
         reason = (
             f"{recovery}:{code}"
@@ -351,8 +355,6 @@ def action_event(
             else f"{recovery}:refused"
         )
         if recovery == "qualification_fallback":
-            source = dict(source)
-            source["run_id"] = failed_run
             question = (
                 "One automatic qualification fallback is exhausted. "
                 if code == "attempt_count" else
@@ -361,6 +363,12 @@ def action_event(
                 "This release cannot resume the ticket. Use the failed run and "
                 "source-event digest as evidence; no same-release command exists. "
                 "Certify a successor release or start a fresh cohort."
+            )
+        elif recovery == "dirty_role_output":
+            question = (
+                "Dirty failed-role output could not be preserved safely. "
+                "The worktree was left untouched; inspect the failed run and "
+                "source-event digest. No same-release automatic recovery exists."
             )
         else:
             question = (

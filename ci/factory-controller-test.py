@@ -8,6 +8,7 @@ import base64
 from concurrent.futures import ThreadPoolExecutor
 import copy
 from contextlib import redirect_stdout
+import errno
 import hashlib
 import hmac
 import importlib.util
@@ -6875,6 +6876,276 @@ class FactoryControllerTest(unittest.TestCase):
             isinstance(call, tuple) and call[:2] == ("models", "fallback-auto")
             for call in calls
         ))
+
+    def test_dirty_terminal_quarantine_precedes_clean_passport(self) -> None:
+        cell = self.root / "dirty-cell"
+        remote = self.root / "dirty-remote.git"
+        branch = "ticket/T-112"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        subprocess.run(
+            ["git", "init", "-q", "-b", branch, str(cell)], check=True,
+        )
+        (cell / "app/tools").mkdir(parents=True)
+        (cell / "README.md").write_text("base\n", encoding="utf-8")
+        (cell / "app/config.js").write_text("export const config = 0;\n")
+        (cell / "app/staged.js").write_text("export const staged = 0;\n")
+        subprocess.run(["git", "-C", str(cell), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(cell), "-c", "user.name=Factory",
+            "-c", "user.email=factory@example.invalid", "commit", "-qm", "base",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(cell), "remote", "add", "origin", str(remote),
+        ], check=True)
+        subprocess.run(
+            ["git", "-C", str(cell), "push", "-q", "-u", "origin", branch],
+            check=True,
+        )
+        head = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        (cell / "README.md").write_text("committed output\n", encoding="utf-8")
+        (cell / "app/config.js").write_text("export const config = 1;\n")
+        committed = cell / "app/tools/committed.js"
+        committed.write_text("export const committed = 1;\n", encoding="utf-8")
+        subprocess.run(
+            [
+                "git", "-C", str(cell), "add", "README.md", "app/config.js",
+                "app/tools/committed.js",
+            ],
+            check=True,
+        )
+        subprocess.run([
+            "git", "-C", str(cell), "-c", "user.name=Factory",
+            "-c", "user.email=factory@example.invalid", "commit", "-qm", "output",
+        ], check=True)
+        output_head = subprocess.run(
+            ["git", "-C", str(cell), "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        output = cell / "app/tools/result.js"
+        output.write_text("export const result = 1;\n", encoding="utf-8")
+        sibling_output = cell / "app/tools/sibling.js"
+        sibling_output.write_text("export const sibling = 1;\n", encoding="utf-8")
+        (cell / "app/config.js").write_text("export const config = 2;\n")
+        (cell / "app/staged.js").write_text("export const staged = 1;\n")
+        subprocess.run(
+            ["git", "-C", str(cell), "add", "app/staged.js"], check=True,
+        )
+        receipt = "b" * 64
+        claim = {
+            "branch": branch, "lease": "a" * 64, "publication_lease": "",
+            "receipt": receipt, "role": "builder", "schema": CONTROL.CLAIM_SCHEMA,
+            "status": "running", "ticket": "T-112", "worktree": str(cell),
+        }
+        terminal = {
+            "accounting_state": "completed", "exit_status": "11",
+            "go_issued": "1", "kit_sha": self.release.name,
+            "phase": "completed", "role": "builder",
+            "role_branch_before": branch, "role_exit": "role_exit_dirty",
+            "role_head_after": output_head, "role_head_before": head,
+            "role_remote_before": head, "run_id": "dirty-builder",
+            "task_submitted": "1", "terminal_at_epoch_ns": "1787729799206152000",
+            "ticket": "T-112", "transition_receipt_sha256": receipt,
+        }
+        controller = CONTROL.Controller(self.args)
+        controller.terminal_for_receipt = lambda *_args: terminal
+        controller.emit_attempt_terminal = lambda *_args: None
+        calls = []
+        controller.terminal_already_exported = lambda *_args: "passport" in calls
+
+        def passport(*_args):
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(cell), "status", "--porcelain"],
+                    text=True, capture_output=True, check=True,
+                ).stdout,
+                "",
+            )
+            calls.append("passport")
+
+        controller.passport = passport
+        controller.migrate_passport = lambda *_args: calls.append("migrate")
+        controller.archive_emergency_admission = lambda *_args: None
+        controller.save_claim = lambda *_args: None
+        controller.release_ticket_lease = lambda *_args: calls.append("release")
+        controller.withdraw_publication = lambda *_args: None
+        controller.passport_sha256 = lambda *_args: "c" * 64
+
+        self.assertFalse(controller.finish_pending_run(claim))
+        diagnostic = subprocess.run(
+            [
+                "git", "-C", str(cell), "rev-parse",
+                "refs/factory/failed-role/T-112/dirty-builder",
+            ], text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(cell), "show", f"{diagnostic}:app/tools/result.js"],
+                text=True, capture_output=True, check=True,
+            ).stdout,
+            "export const result = 1;\n",
+        )
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(cell), "show", f"{diagnostic}:README.md"],
+                text=True, capture_output=True, check=True,
+            ).stdout,
+            "committed output\n",
+        )
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(cell), "show", f"{diagnostic}:app/config.js"],
+                text=True, capture_output=True, check=True,
+            ).stdout,
+            "export const config = 2;\n",
+        )
+        self.assertFalse(output.exists())
+        self.assertFalse(sibling_output.exists())
+        self.assertFalse(committed.exists())
+        self.assertEqual((cell / "README.md").read_text(), "base\n")
+        self.assertEqual(
+            (cell / "app/config.js").read_text(), "export const config = 0;\n",
+        )
+        self.assertEqual(
+            (cell / "app/staged.js").read_text(), "export const staged = 0;\n",
+        )
+        self.assertEqual(claim["blocked_reason"], "role-failure")
+        self.assertEqual(calls, ["passport", "release"])
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(cell), "show", "-s", "--format=%B", diagnostic],
+                text=True, capture_output=True, check=True,
+            ).stdout.splitlines()[:2],
+            ["T-112: preserve dirty builder output dirty-builder", ""],
+        )
+
+        subprocess.run(
+            ["git", "-C", str(cell), "read-tree", output_head], check=True,
+        )
+        (cell / "README.md").write_text("committed output\n", encoding="utf-8")
+        (cell / "app/config.js").write_text("export const config = 2;\n")
+        output.write_text("export const result = 1;\n", encoding="utf-8")
+        split = subprocess.run(
+            ["git", "-C", str(cell), "status", "--porcelain", "app/config.js"],
+            text=True, capture_output=True, check=True,
+        ).stdout
+        self.assertEqual(split[:2], "MM")
+        claim.update(lease="a" * 64, status="running")
+        self.assertFalse(controller.finish_pending_run(claim))
+        self.assertEqual(
+            claim["blocked_reason"], "role-failure",
+            [CONTROL.read(path) for path in controller.events.glob("*.json")],
+        )
+        self.assertEqual(calls, ["passport", "release", "migrate", "release"])
+        self.assertFalse(output.exists())
+        self.assertEqual((cell / "app/config.js").read_text(), "export const config = 0;\n")
+        self.assertEqual(
+            subprocess.run(
+                [
+                    "git", "-C", str(cell), "rev-parse",
+                    "refs/factory/failed-role/T-112/dirty-builder",
+                ], text=True, capture_output=True, check=True,
+            ).stdout.strip(),
+            diagnostic,
+        )
+
+        zero_output = cell / "app/tools/zero-exit.js"
+        zero_output.write_text("export const zeroExit = true;\n")
+        zero_receipt = "d" * 64
+        zero_terminal = {
+            **terminal, "exit_status": "0", "role_head_after": head,
+            "run_id": "dirty-zero-exit",
+            "transition_receipt_sha256": zero_receipt,
+        }
+        claim.update(
+            lease="a" * 64, receipt=zero_receipt, role="builder", status="running",
+        )
+        controller.terminal_for_receipt = lambda *_args: zero_terminal
+        controller.terminal_already_exported = lambda *_args: False
+        calls.clear()
+        self.assertFalse(controller.finish_pending_run(claim))
+        self.assertFalse(zero_output.exists())
+        self.assertEqual(calls, ["passport", "release"])
+        subprocess.run(
+            [
+                "git", "-C", str(cell), "rev-parse", "--verify",
+                "refs/factory/failed-role/T-112/dirty-zero-exit",
+            ], text=True, capture_output=True, check=True,
+        )
+
+        invalid_path = os.fsencode(cell / "app/tools") + b"/invalid-\xff.js"
+        try:
+            descriptor = os.open(
+                invalid_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+            )
+        except OSError as error:
+            if error.errno != errno.EILSEQ:
+                raise
+        else:
+            os.write(descriptor, b"invalid filename\n")
+            os.close(descriptor)
+            invalid_receipt = "e" * 64
+            invalid_terminal = {
+                **terminal, "role_head_after": head,
+                "run_id": "invalid-utf8-path",
+                "transition_receipt_sha256": invalid_receipt,
+            }
+            claim.update(
+                lease="a" * 64, receipt=invalid_receipt,
+                role="builder", status="running",
+            )
+            controller.terminal_for_receipt = lambda *_args: invalid_terminal
+            calls.clear()
+            self.assertFalse(controller.finish_pending_run(claim))
+            self.assertTrue(os.path.exists(invalid_path))
+            self.assertEqual(
+                claim["blocked_reason"],
+                f"dirty-role-output-refused:{self.release.name}",
+            )
+            events = [
+                CONTROL.read(path) for path in controller.events.glob("*.json")
+            ]
+            refused = [
+                event for event in events
+                if event.get("event") == "typed_recovery_refused"
+                and event.get("failed_run_id") == "invalid-utf8-path"
+            ]
+            self.assertEqual(len(refused), 1)
+            self.assertEqual(refused[0]["recovery_kind"], "dirty_role_output")
+            os.unlink(invalid_path)
+
+        claim["receipt"] = receipt
+        unsafe = {**terminal, "role_head_after": head, "run_id": "unsafe-route"}
+        route = cell / "factory/route-plans/T-112.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        with self.assertRaisesRegex(CONTROL.HandoffError, "Git state is unavailable"):
+            controller.quarantine_dirty_role_output(claim, unsafe)
+        self.assertEqual(route.read_text(), "{}\n")
+        route.unlink()
+
+        config = cell / "app/config.js"
+        config.write_text("export const config = 2;\n")
+        subprocess.run(["git", "-C", str(cell), "add", "app/config.js"], check=True)
+        config.write_text("export const config = 3;\n")
+        unsafe["run_id"] = "unsafe-split-index"
+        with self.assertRaisesRegex(CONTROL.HandoffError, "Git state is unavailable"):
+            controller.quarantine_dirty_role_output(claim, unsafe)
+        self.assertEqual(config.read_text(), "export const config = 3;\n")
+        subprocess.run(
+            ["git", "-C", str(cell), "reset", "-q", "--hard", head], check=True,
+        )
+
+        output.write_text("reviewer mutation\n", encoding="utf-8")
+        claim["role"] = "reviewer"
+        reviewer = {
+            **unsafe, "role": "reviewer", "run_id": "unsafe-reviewer",
+        }
+        with self.assertRaisesRegex(CONTROL.HandoffError, "identity is invalid"):
+            controller.quarantine_dirty_role_output(claim, reviewer)
+        self.assertEqual(output.read_text(), "reviewer mutation\n")
 
     def test_reconcile_rearms_exact_externally_applied_fallback(self) -> None:
         (self.product / "factory/QUALIFICATION.json").write_text(

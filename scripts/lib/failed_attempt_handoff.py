@@ -1169,6 +1169,90 @@ def revalidate_handoff(preview, policy, git_auth=None):
     return current
 
 
+def _prepare_snapshot_index(repo, preview, policy, environment, label="handoff"):
+    """Populate a temporary index from an already validated snapshot."""
+    _git(repo, ["read-tree", preview.head], env=environment)
+    root_fd = os.open(repo, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        for entry in preview.entries:
+            if entry.state == "deleted":
+                if _read_regular(root_fd, entry.path, policy.max_file_bytes) is not None:
+                    raise HandoffError(f"deleted {label} file reappeared: {entry.path}")
+                _git(
+                    repo,
+                    ["update-index", "--force-remove", "--", entry.path],
+                    env=environment,
+                )
+                continue
+            content = _read_regular(root_fd, entry.path, policy.max_file_bytes)
+            if content is None:
+                raise HandoffError(f"{label} file disappeared: {entry.path}")
+            raw, mode = content
+            oid = _git(
+                repo, ["hash-object", "-w", "--stdin"],
+                input_bytes=raw, env=environment,
+            ).decode().strip()
+            if (
+                mode != entry.mode
+                or oid != entry.blob_oid
+                or _sha256(raw) != entry.content_sha256
+            ):
+                raise HandoffError(f"{label} file drifted: {entry.path}")
+            _git(
+                repo,
+                ["update-index", "--add", "--cacheinfo", mode, oid, entry.path],
+                env=environment,
+            )
+    finally:
+        os.close(root_fd)
+
+
+def build_diagnostic_commit(
+    preview, policy, *, commit_timestamp, subject, transition_receipt_sha256,
+    binding_sha256, git_auth=None,
+):
+    """Preserve a validated dirty role snapshot without advancing its branch."""
+    if (
+        not isinstance(commit_timestamp, str)
+        or not re.fullmatch(r"[0-9]+ [+-][0-9]{4}", commit_timestamp)
+        or not isinstance(subject, str)
+        or not subject.strip()
+        or any(item in subject for item in ("\n", "\r", "\x00"))
+        or not HEX64_RE.fullmatch(transition_receipt_sha256 or "")
+        or not HEX64_RE.fullmatch(binding_sha256 or "")
+    ):
+        raise HandoffError("diagnostic commit identity is invalid")
+    revalidate_handoff(preview, policy, git_auth)
+    repo = Path(preview.repo)
+    with tempfile.TemporaryDirectory(prefix="nysa-handoff-index-") as temporary:
+        environment = {
+            "GIT_INDEX_FILE": str(Path(temporary) / "index"),
+            "GIT_AUTHOR_NAME": "Nysa Failed Attempt Handoff",
+            "GIT_AUTHOR_EMAIL": "handoff@nysa.invalid",
+            "GIT_AUTHOR_DATE": commit_timestamp,
+            "GIT_COMMITTER_NAME": "Nysa Failed Attempt Handoff",
+            "GIT_COMMITTER_EMAIL": "handoff@nysa.invalid",
+            "GIT_COMMITTER_DATE": commit_timestamp,
+        }
+        _prepare_snapshot_index(repo, preview, policy, environment, "diagnostic")
+        tree = _git(repo, ["write-tree"], env=environment).decode().strip()
+        revalidate_handoff(preview, policy, git_auth)
+        message = (
+            f"{subject}\n\n"
+            f"Failed-Attempt-Snapshot: {preview.snapshot_digest}\n"
+            f"Transition-Receipt-SHA256: {transition_receipt_sha256}\n"
+            f"Dirty-Role-Binding-SHA256: {binding_sha256}\n"
+        ).encode()
+        commit = _git(
+            repo, ["commit-tree", tree, "-p", preview.head],
+            input_bytes=message, env=environment,
+        ).decode().strip()
+    return HandoffCommit(
+        commit=commit, tree=tree, parent=preview.head,
+        snapshot_digest=preview.snapshot_digest, revision_hash="",
+    )
+
+
 def build_handoff_commit(
     preview,
     policy,
@@ -1230,41 +1314,7 @@ def build_handoff_commit(
             "GIT_COMMITTER_EMAIL": author_email,
             "GIT_COMMITTER_DATE": commit_timestamp,
         }
-        _git(repo, ["read-tree", preview.head], env=commit_env)
-        root_fd = os.open(repo, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            for entry in preview.entries:
-                if entry.state == "deleted":
-                    if _read_regular(root_fd, entry.path, policy.max_file_bytes) is not None:
-                        raise HandoffError(f"deleted handoff file reappeared: {entry.path}")
-                    _git(
-                        repo,
-                        ["update-index", "--force-remove", "--", entry.path],
-                        env=commit_env,
-                    )
-                    continue
-                content = _read_regular(
-                    root_fd, entry.path, policy.max_file_bytes
-                )
-                if content is None:
-                    raise HandoffError(f"handoff file disappeared: {entry.path}")
-                raw, mode = content
-                oid = _git(
-                    repo, ["hash-object", "-w", "--stdin"], input_bytes=raw, env=commit_env
-                ).decode().strip()
-                if (
-                    mode != entry.mode
-                    or oid != entry.blob_oid
-                    or _sha256(raw) != entry.content_sha256
-                ):
-                    raise HandoffError(f"handoff file drifted: {entry.path}")
-                _git(
-                    repo,
-                    ["update-index", "--add", "--cacheinfo", mode, oid, entry.path],
-                    env=commit_env,
-                )
-        finally:
-            os.close(root_fd)
+        _prepare_snapshot_index(repo, preview, policy, commit_env)
         journal_oid = _git(
             repo, ["hash-object", "-w", "--stdin"],
             input_bytes=journal_content, env=commit_env,

@@ -509,6 +509,18 @@ class OperatorEventWatchTest(unittest.TestCase):
         )
         self.assertEqual(model_refusal["reason"], "model_identity_success:refused")
         self.assertNotIn("raw-source-reason", WATCH.canonical(model_refusal))
+        dirty_refusal = WATCH.action_event(
+            self.source(
+                "typed_recovery_refused", recovery_kind="dirty_role_output",
+                reason="token=raw-dirty-reason", failed_run_id="failed-run-2",
+            ),
+            self.state, "relay", "1-b.json",
+        )
+        self.assertEqual(dirty_refusal["reason"], "dirty_role_output:refused")
+        self.assertEqual(dirty_refusal["run_id"], "failed-run-2")
+        self.assertIn("worktree was left untouched", dirty_refusal["question"])
+        self.assertIn("No same-release automatic recovery", dirty_refusal["question"])
+        self.assertNotIn("raw-dirty-reason", WATCH.canonical(dirty_refusal))
         self.assertIsNone(WATCH.action_event(
             self.source(
                 "ticket_recovery_failed", recovery="made-up",
