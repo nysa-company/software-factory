@@ -1062,6 +1062,8 @@ def project_contract_recovery(
         "name": "operator resume",
         "started_epoch_ms": started_epoch_ms,
     })
+    if result.returncode != 0:
+        raise QualificationRunError("qualification operator resume projection refused")
     try:
         receipt = json.loads(result.stdout)
     except json.JSONDecodeError as error:
@@ -1075,8 +1077,7 @@ def project_contract_recovery(
         },
     ) if isinstance(receipt, dict) else None
     if (
-        result.returncode != 0
-        or persisted != receipt
+        persisted != receipt
         or receipt.get("consumed") is not False
         or receipt.get("ticket") != ticket
         or receipt.get("action") != "resume"

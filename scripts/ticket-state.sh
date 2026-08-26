@@ -333,6 +333,7 @@ python3 - "$KIT_DIR/scripts/lib" "$MAP" "$TICKET" "$OPERATOR_VERSION" \
 import fcntl
 import json
 import os
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -366,8 +367,19 @@ if not intent.exists():
             output.flush()
             os.fsync(output.fileno())
 lock = path.parent / ".operator-map.lock"
-with lock.open("a") as handle:
-    fcntl.flock(handle, fcntl.LOCK_EX)
+descriptor = os.open(
+    lock, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600,
+)
+try:
+    info = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+        or stat.S_IMODE(info.st_mode) != 0o600
+    ):
+        raise SystemExit("operator map lock is unsafe")
+    fcntl.flock(descriptor, fcntl.LOCK_EX)
     data = json.loads(path.read_text())
     entry = data.get("tickets", {}).get(ticket, {})
     current = operator_version(entry.get("operator") or {})
@@ -389,6 +401,8 @@ with lock.open("a") as handle:
         output.flush()
         os.fsync(output.fileno())
     os.replace(temporary, path)
+finally:
+    os.close(descriptor)
 PY
 
 python3 - "$TICKET" "$ACTION" "$STATE" "$CHANGED" "$LOCAL_HEAD" <<'PY'

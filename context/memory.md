@@ -8306,3 +8306,13 @@ Native CLI login shells validate Node and npm through the certified runtime
 PATH captured before role policy is applied. The Planner still receives its
 package-manager guard first in the task PATH, so allowed shell commands work
 without permitting npm, npx, pnpm, yarn, or corepack.
+
+## 2026-08-26 — Decision 613: Operator-map lock producers share one strict shape
+
+Category: Reliability
+
+Ticket-state creates the shared operator-map lock with owner-only mode and
+validates its regular-file, owner, single-link, and exact-mode identity before
+locking. Unsafe existing locks remain untouched and fail closed. Qualification
+resume checks a refused operator projection before parsing output so operators
+receive the stable refusal instead of a misleading JSON error.

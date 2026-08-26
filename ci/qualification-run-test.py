@@ -1406,6 +1406,44 @@ raise SystemExit(code)
         self.assertEqual((code, value["status"]), (2, "error"))
         self.assertEqual(self.called(), ["doctor"])
 
+    def test_explicit_qualification_resume_surfaces_operator_refusal(self) -> None:
+        doctor, _worktree, head, receipt = self.contract_recovery_fixture()
+        doctor["checks"]["contract_resume"] = {
+            "incidents": [{
+                "blocked_receipt_sha256": receipt,
+                "observed_at_epoch_ns": 0,
+                "reason_code": "resume_receipt_mismatch",
+                "ticket": "T-1",
+            }],
+            "status": "warning",
+        }
+        checked = {
+            "action": "repair-check", "current_state": "Blocked-Escalated",
+            "head": head, "repair_role": "planner", "resume_state": "Building",
+            "role": "test-author",
+            "schema": "nysa.software-factory.state-machine/v1",
+            "status": "ready", "ticket": "T-1",
+        }
+        self.operator_authority("T-1")
+        lock = self.operator_map.parent / ".operator-map.lock"
+        lock.write_text("", encoding="utf-8")
+        lock.chmod(0o644)
+        mapping = self.operator_map.read_bytes()
+        receipts = sorted(self.controller_state.glob("operator-receipts/*.json"))
+
+        code, value = self.run_scenario({
+            "doctor": doctor, "state-machine:repair-check": checked,
+        }, resume=("T-1", receipt))
+        self.assertEqual((code, value["status"], value["error"]), (
+            2, "error", "qualification operator resume projection refused",
+        ))
+        self.assertEqual(self.called(), ["doctor", "state-machine:repair-check"])
+        self.assertEqual(self.operator_map.read_bytes(), mapping)
+        self.assertEqual(
+            sorted(self.controller_state.glob("operator-receipts/*.json")), receipts,
+        )
+        self.assertEqual(stat.S_IMODE(lock.stat().st_mode), 0o644)
+
     def test_mixed_source_incident_uses_exact_ticket_authorization(self) -> None:
         doctor, _worktree, head, _receipt = self.contract_recovery_fixture()
         doctor["checks"]["transition_receipts"]["incidents"][0].update({
