@@ -7372,6 +7372,16 @@ class FactoryControllerTest(unittest.TestCase):
                     ("unavailable", ""),
                 )
         self.assertEqual(
+            controller.qualification_delivery_retry(
+                claim, first, record=False,
+            ),
+            ("unavailable", ""),
+        )
+        self.assertFalse(any(
+            CONTROL.read(path)["event"] == "role_delivery_retry"
+            for path in controller.events.glob("*.json")
+        ))
+        self.assertEqual(
             controller.qualification_delivery_retry(claim, first),
             ("retry", "run-1"),
         )
@@ -7386,7 +7396,9 @@ class FactoryControllerTest(unittest.TestCase):
             "pushed", "a" * 40, "a" * 40,
         )
         self.assertEqual(
-            controller.qualification_delivery_retry(claim, first),
+            controller.qualification_delivery_retry(
+                claim, first, record=False,
+            ),
             ("retry", "run-1"),
         )
         claim["receipt"] = "c" * 64
@@ -7395,7 +7407,9 @@ class FactoryControllerTest(unittest.TestCase):
             "transition_receipt_sha256": "c" * 64,
         }
         self.assertEqual(
-            controller.qualification_delivery_retry(claim, second),
+            controller.qualification_delivery_retry(
+                claim, second, record=False,
+            ),
             ("exhausted", "run-1"),
         )
         retries = [
@@ -18671,9 +18685,11 @@ class FactoryControllerTest(unittest.TestCase):
             returncode=0, stderr="", stdout=" M app/output",
         )
         controller.quarantine_dirty_role_output = lambda *_args: None
-        controller.qualification_delivery_retry = lambda *_args: self.fail(
-            "latched terminal authorized another delivery retry"
-        )
+        def delivery_retry(*_args, **kwargs):
+            self.assertFalse(kwargs["record"])
+            return "unavailable", ""
+
+        controller.qualification_delivery_retry = delivery_retry
         controller.terminal_already_exported = lambda *_args: True
         accounting = []
         controller.migrate_passport = lambda *_args: accounting.append("passport")
@@ -18704,6 +18720,64 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(claim["receipt"], "b" * 64)
         self.assertEqual(accounting, ["passport", "claim", "lease"])
         self.assertEqual(events, ["terminal_export_recovered", "role_blocked"])
+
+    def test_qualification_retry_settlement_linearizes_before_sibling_latch(
+        self,
+    ) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110", "T-111"]}
+        claim = {
+            "branch": "ticket/T-110", "lease": "a" * 64,
+            "receipt": "b" * 64, "role": "builder", "status": "running",
+            "ticket": "T-110", "worktree": str(self.root / "cell-1"),
+        }
+        terminal = {
+            "accounting_state": "completed", "exit_status": "11",
+            "go_issued": "1", "role_exit": "role_exit_dirty",
+            "run_id": "run-1", "task_submitted": "1",
+        }
+        controller.role_active = lambda _claim: False
+        controller.terminal_for_receipt = lambda *_args: terminal
+        controller.emit_attempt_terminal = lambda *_args: None
+        controller.cell_git = lambda *_args: argparse.Namespace(
+            returncode=0, stderr="", stdout="",
+        )
+        controller.quarantine_dirty_role_output = lambda *_args: None
+        retry_started = threading.Event()
+        release_retry = threading.Event()
+
+        def delivery_retry(*_args, **kwargs):
+            self.assertTrue(kwargs["record"])
+            retry_started.set()
+            self.assertTrue(release_retry.wait(1))
+            return "retry", "run-1"
+
+        controller.qualification_delivery_retry = delivery_retry
+        controller.terminal_already_exported = lambda *_args: True
+        controller.migrate_passport = lambda *_args: None
+        controller.archive_emergency_admission = lambda *_args: None
+        controller.save_claim = lambda *_args: None
+        controller.event = lambda *_args, **_kwargs: None
+        latch_started = threading.Event()
+
+        def latch():
+            latch_started.set()
+            controller.latch_qualification_cohort_error()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            settlement = executor.submit(controller.finish_pending_run, claim)
+            self.assertTrue(retry_started.wait(1))
+            sibling_latch = executor.submit(latch)
+            self.assertTrue(latch_started.wait(1))
+            self.assertFalse(controller.qualification_latch_pending.wait(0.1))
+            release_retry.set()
+            self.assertTrue(settlement.result(timeout=2))
+            sibling_latch.result(timeout=2)
+
+        self.assertTrue(controller.qualification_stopped())
+        self.assertEqual(claim["status"], "claimed")
+        self.assertEqual(claim["receipt"], "")
+        self.assertEqual(claim["role"], "")
 
     def test_qualification_latched_provider_failure_does_not_fallback(self) -> None:
         controller = CONTROL.Controller(self.args)

@@ -646,6 +646,7 @@ class Controller:
         self.qualification_cohort_error = Event()
         self.qualification_latch_pending = Event()
         self.qualification_launch_lock = RLock()
+        self.qualification_latch_lock = RLock()
         # ponytail: cells share one Git common directory; use per-cell refs only if refresh throughput matters.
         self.git_lock = Lock()
         # ponytail: closeouts are rare; serialize them until throughput requires a queue.
@@ -769,7 +770,8 @@ class Controller:
         self.event(name, ticket, **details)
 
     def qualification_delivery_retry(
-        self, claim: dict[str, Any], terminal: dict[str, Any],
+        self, claim: dict[str, Any], terminal: dict[str, Any], *,
+        record: bool = True,
     ) -> tuple[str, str]:
         role_exit = terminal.get("role_exit", "")
         run_id = terminal.get("run_id", "")
@@ -900,6 +902,8 @@ class Controller:
             ):
                 raise ControllerError("role delivery retry replay changed")
             return ("retry" if prior_run == run_id else "exhausted"), prior_run
+        if not record:
+            return "unavailable", ""
         self.event(
             "role_delivery_retry", claim["ticket"], run_id=run_id,
             input_head=input_head, role=role, role_exit=role_exit,
@@ -12645,7 +12649,11 @@ class Controller:
             self.qualification_launch_lock
             if self.qualification else nullcontext()
         )
-        with gate:
+        latch_gate = (
+            self.qualification_latch_lock
+            if self.qualification else nullcontext()
+        )
+        with gate, latch_gate:
             return self._finish_pending_run(claim)
 
     def _finish_pending_run(self, claim: dict[str, Any]) -> bool | None:
@@ -12786,8 +12794,9 @@ class Controller:
                     reason=safe_error(str(error)),
                 )
                 return False
-            if not self.qualification_stopped():
-                delivery_retry = self.qualification_delivery_retry(claim, terminal)
+            delivery_retry = self.qualification_delivery_retry(
+                claim, terminal, record=not self.qualification_stopped(),
+            )
         if (
             not qualification_fallback
             and terminal_failed
@@ -12819,6 +12828,7 @@ class Controller:
             return False
         if (
             delivery_retry[0] == "retry"
+            and not self.qualification_stopped()
             or terminal.get("role_exit") == "role_exit_invalid_output"
             and not self.qualification
         ):
@@ -13753,7 +13763,8 @@ class Controller:
 
     def latch_qualification_cohort_error(self) -> None:
         if self.qualification:
-            self.qualification_latch_pending.set()
+            with self.qualification_latch_lock:
+                self.qualification_latch_pending.set()
             with self.qualification_launch_lock:
                 self.qualification_cohort_error.set()
 
