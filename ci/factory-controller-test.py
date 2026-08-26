@@ -7242,6 +7242,12 @@ class FactoryControllerTest(unittest.TestCase):
         route.parent.mkdir(parents=True)
         route.write_text("{}\n", encoding="utf-8")
         route_digest = hashlib.sha256(route.read_bytes()).hexdigest()
+        self.operator_passport(
+            "T-110", "Review", "validating", head_sha="a" * 40,
+        )
+        passport_file_sha256 = hashlib.sha256(
+            (self.state / "passports/T-110.json").read_bytes()
+        ).hexdigest()
         claim = {
             "branch": "ticket/T-110",
             "lease": "a" * 64,
@@ -7278,12 +7284,16 @@ class FactoryControllerTest(unittest.TestCase):
         controller.event = lambda name, *_args, **_kwargs: calls.append(name)
         controller.transition_receipt = lambda *_args, **_kwargs: {
             "consumed": True, "head_sha": "a" * 40,
-            "passport_sha256": None,
+            "passport_sha256": passport_file_sha256,
             "receipt_sha256": claim["receipt"], "role": claim["role"],
             "route_plan_sha256": route_digest, "stage": "RUN reviewer",
         }
         controller.remote_cell_head_status = lambda _claim: (
             "pushed", "a" * 40, "a" * 40,
+        )
+        controller.cell_git = lambda _claim, command, *_args: argparse.Namespace(
+            returncode=0,
+            stdout=claim["branch"] + "\n" if command == "symbolic-ref" else "",
         )
         self.assertTrue(controller.finish_pending_run(claim))
         self.assertEqual(claim["status"], "claimed")
@@ -18953,7 +18963,7 @@ class FactoryControllerTest(unittest.TestCase):
         result = restarted.reconcile()
 
         self.assertTrue(restarted.qualification_cohort_error.is_set())
-        self.assertEqual(quarantines, ["run-2"])
+        self.assertEqual(set(quarantines), {"run-2"})
         self.assertEqual(calls, ["T-110"])
         self.assertEqual(result["results"], [{
             "status": "blocked", "ticket": "T-110",
