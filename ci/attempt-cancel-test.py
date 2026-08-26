@@ -1345,6 +1345,183 @@ class AttemptCancellationTest(unittest.TestCase):
             ("terminal", "cancelled", 2_000_000, terminal["version"]),
         )
 
+    def test_cross_release_recovers_legacy_submitted_manifest(self):
+        database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"
+        source_sha = "d" * 40
+        product_id = f"qualification-fixture:{source_sha}"
+        attempt_id = self.submitted_provider_attempt(
+            database, product_id=product_id,
+        )
+        process, started = self.spawn()
+        values = self.manifest(
+            process, started, go="1", provider_attempt_id=attempt_id,
+        )
+        values.update({
+            "contract_version": "2.0.0", "kit_sha": source_sha,
+            "provider_product_id": product_id, "submitted_at_epoch_ns": "",
+            "task_submitted": "0", "ticket_kit_sha": source_sha,
+        })
+        self.write_meta(values)
+        plan = CANCEL.calculate(
+            self.root, "T-1", "run-1", "operator_requested", "8" * 32,
+        )
+        wrapper = self.runs / "run-1.wrapper"
+        submitted = self.runs / ".run-1.submitted"
+        self.assertFalse(wrapper.exists() or wrapper.is_symlink())
+        self.assertFalse(submitted.exists() or submitted.is_symlink())
+        process.kill()
+        process.wait(timeout=5)
+        with mock.patch.dict(
+            os.environ, {"FACTORY_PROVIDER_DB": str(database)}, clear=False,
+        ), self.assertRaisesRegex(CANCEL.CancelError, "identity disagrees"):
+            CANCEL.apply_plan(self.root, plan, 1)
+        admission = self.root.parent / ".dispatch-admission.lock"
+        controller = self.root.parent / "reconcile.lock"
+        runtime_root = self.root.parent / "provider-runtime"
+        admission.touch(mode=0o600)
+        controller.touch(mode=0o600)
+        descriptors = (os.open(admission, os.O_RDWR), os.open(controller, os.O_RDWR))
+        for descriptor in descriptors:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        try:
+            with mock.patch.dict(os.environ, {
+                "FACTORY_PROVIDER_DB": str(database),
+                "FACTORY_CLI_RUNTIME_ROOT": str(runtime_root),
+                "FACTORY_CROSS_RELEASE_PRODUCT_ID": product_id,
+                "FACTORY_CROSS_RELEASE_SOURCE_SHA": source_sha,
+                "FACTORY_DISPATCH_ADMISSION_LOCK": str(admission),
+                "FACTORY_DISPATCH_ADMISSION_LOCK_FD": str(descriptors[0]),
+                "FACTORY_QUALIFICATION_CONTROLLER_LOCK": str(controller),
+                "FACTORY_QUALIFICATION_CONTROLLER_LOCK_FD": str(descriptors[1]),
+            }, clear=False):
+                missing_timestamp = dict(values)
+                missing_timestamp.pop("submitted_at_epoch_ns")
+                fingerprints = {
+                    "missing timestamp": missing_timestamp,
+                    "nonblank timestamp": {
+                        **values, "submitted_at_epoch_ns": "1",
+                    },
+                    "submitted manifest": {**values, "task_submitted": "1"},
+                    "pre-GO manifest": {**values, "go_issued": "0"},
+                    "wrong contract": {**values, "contract_version": "1.8.0"},
+                    "wrong source": {**values, "kit_sha": "e" * 40},
+                    "wrong ticket source": {
+                        **values, "ticket_kit_sha": "e" * 40,
+                    },
+                    "wrong product": {
+                        **values, "provider_product_id": f"foreign:{source_sha}",
+                    },
+                }
+                for label, fingerprint in fingerprints.items():
+                    with self.subTest(fingerprint=label), self.assertRaisesRegex(
+                        CANCEL.CancelError, "identity disagrees",
+                    ):
+                        CANCEL.converge_provider_attempt(
+                            self.root, fingerprint, plan,
+                        )
+                provider = self.provider_command(
+                    database, "status", "--attempt-id", attempt_id,
+                )["attempts"][0]
+                terminal = {
+                    **provider, "charge_micro_usd": provider["reserve_micro_usd"],
+                    "state": "terminal", "terminal_at": 103,
+                    "terminal_result": "cancelled", "updated_at": 103,
+                    "version": 5,
+                }
+                provider_drift = {
+                    "submitted version": {**provider, "version": 5},
+                    "terminal version": {**terminal, "version": 6},
+                    "terminal result": {**terminal, "terminal_result": "failed"},
+                    "terminal charge": {
+                        **terminal,
+                        "charge_micro_usd": provider["reserve_micro_usd"] - 1,
+                    },
+                    "terminal timestamp": {**terminal, "updated_at": 104},
+                    "ticket": {**provider, "ticket_id": "T-2"},
+                    "family": {**provider, "provider_family": "anthropic"},
+                    "route": {**provider, "account_route": "other"},
+                    "policy": {**provider, "policy_sha256": "f" * 64},
+                    "reserve": {
+                        **provider,
+                        "reserve_micro_usd": provider["reserve_micro_usd"] + 1,
+                    },
+                    "submission chronology": {
+                        **provider, "go_at": provider["submitted_at"] + 1,
+                    },
+                }
+                for label, drifted in provider_drift.items():
+                    result = subprocess.CompletedProcess(
+                        [], 0, json.dumps({"attempts": [drifted]}), "",
+                    )
+                    with self.subTest(provider=label), mock.patch.object(
+                        CANCEL.subprocess, "run", return_value=result,
+                    ) as runner, self.assertRaisesRegex(
+                        CANCEL.CancelError, "identity disagrees|changed",
+                    ):
+                        CANCEL.converge_provider_attempt(self.root, values, plan)
+                    self.assertEqual(runner.call_count, 1)
+                wrapper.write_text("unexpected\n")
+                with self.assertRaisesRegex(CANCEL.CancelError, "identity disagrees"):
+                    CANCEL.apply_plan(self.root, plan, 1)
+                wrapper.unlink()
+                submitted.symlink_to(self.runs / "run-1.meta")
+                with self.assertRaisesRegex(CANCEL.CancelError, "identity disagrees"):
+                    CANCEL.apply_plan(self.root, plan, 1)
+                submitted.unlink()
+                provider_runtime = runtime_root / "attempts" / attempt_id
+                provider_runtime.mkdir(parents=True)
+                (provider_runtime / "owner").write_text(f"{attempt_id}\n")
+                with self.assertRaisesRegex(CANCEL.CancelError, "identity disagrees"):
+                    CANCEL.apply_plan(self.root, plan, 1)
+                (provider_runtime / "owner").unlink()
+                provider_runtime.rmdir()
+                with mock.patch.object(
+                    CANCEL, "replace_fields", side_effect=OSError("crash"),
+                ), self.assertRaisesRegex(OSError, "crash"):
+                    CANCEL.apply_plan(self.root, plan, 1)
+                interrupted = self.provider_command(
+                    database, "status", "--attempt-id", attempt_id,
+                )["attempts"][0]
+                interrupted_manifest = IDENTITY.parse_fields(
+                    (self.runs / "run-1.meta").read_bytes(), "run manifest",
+                )
+                self.assertFalse((self.runs / "run-1.cancel.json").exists())
+                self.assertEqual(
+                    (
+                        interrupted_manifest["task_submitted"],
+                        interrupted_manifest["submitted_at_epoch_ns"],
+                    ),
+                    ("0", ""),
+                )
+                receipt = CANCEL.apply_plan(self.root, plan, 1)
+                terminal = self.provider_command(
+                    database, "status", "--attempt-id", attempt_id,
+                )["attempts"][0]
+                replay = CANCEL.apply_plan(self.root, plan, 1)
+        finally:
+            for descriptor in descriptors:
+                os.close(descriptor)
+        manifest = IDENTITY.parse_fields(
+            (self.runs / "run-1.meta").read_bytes(), "run manifest",
+        )
+        self.assertEqual(receipt, replay)
+        self.assertEqual(
+            (
+                interrupted["state"], interrupted["terminal_result"],
+                interrupted["charge_micro_usd"], interrupted["version"],
+                receipt["accounting_state"], receipt["charged_usd"],
+                terminal["state"], terminal["terminal_result"],
+                terminal["charge_micro_usd"], terminal["version"],
+                manifest["task_submitted"],
+                manifest["submitted_at_epoch_ns"],
+            ),
+            (
+                "terminal", "cancelled", 2_000_000, 5,
+                "cancelled_conservative", "2.00", "terminal", "cancelled",
+                2_000_000, 5, "1", "102999999999",
+            ),
+        )
+
     def test_stale_terminal_provider_attempt_recovers_durable_actual_charge(self):
         self.assertEqual(CANCEL.micro_usd("0.00000001"), 1)
         database = self.root.parent / "qualification/provider/accounting/state-v2.sqlite3"
