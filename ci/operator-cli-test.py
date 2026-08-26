@@ -139,6 +139,42 @@ class OperatorCliTest(unittest.TestCase):
         with self.assertRaises(receipts.OperatorReceiptError):
             receipts.verify_consume(self.state, "T-1", "ready")
 
+    def test_ready_accepts_exact_detached_protected_main(self) -> None:
+        head = run_git(self.product, "rev-parse", "HEAD")
+        run_git(self.product, "switch", "--quiet", "--detach", head)
+
+        receipt = self.cli("ready", "--ticket", "T-1")
+
+        self.assertTrue(receipt["consumed"])
+        self.assertEqual(run_git(self.product, "rev-parse", "HEAD"), head)
+        self.assertEqual(
+            run_git(self.product, "rev-parse", "--abbrev-ref", "HEAD"), "HEAD",
+        )
+
+    def test_ready_refuses_stale_detached_protected_main_actionably(self) -> None:
+        stale = run_git(self.product, "rev-parse", "HEAD")
+        run_git(self.product, "commit", "--allow-empty", "--quiet", "-m", "advance")
+        run_git(self.product, "push", "--quiet", "origin", "main")
+        run_git(self.product, "switch", "--quiet", "--detach", stale)
+
+        result = self.raw_cli("ready", "--ticket", "T-1")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("requires exact protected origin/main", result.stderr)
+        self.assertIn(
+            "recovery: git switch --detach refs/remotes/origin/main",
+            result.stderr,
+        )
+
+    def test_ready_refuses_non_main_branch_actionably(self) -> None:
+        run_git(self.product, "switch", "--quiet", "-c", "feature")
+
+        result = self.raw_cli("ready", "--ticket", "T-1")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("requires main or detached protected main", result.stderr)
+        self.assertIn("git fetch origin main", result.stderr)
+
     def test_ready_binds_the_expected_remote_base(self) -> None:
         run_git(self.product, "switch", "--quiet", "-c", "ticket/T-1")
         run_git(self.product, "commit", "--allow-empty", "--quiet", "-m", "Backlog")

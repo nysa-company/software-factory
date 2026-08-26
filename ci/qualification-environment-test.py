@@ -2142,6 +2142,31 @@ class QualificationEnvironmentTest(unittest.TestCase):
             "exact-complete",
         )
 
+    def test_contract_2_prepare_accepts_exact_detached_protected_main(self) -> None:
+        self.use_contract_2()
+        self.use_real_branch_preflight()
+        for ticket in ("T-101", "T-102", "T-103"):
+            path = self.product / f"factory/tickets/{ticket}.md"
+            path.write_text(path.read_text().replace("State: Ready", "State: Backlog"))
+        run(self.product, "git", "add", "factory/tickets")
+        run(self.product, "git", "commit", "-qm", "protect backlog cohort")
+        run(self.product, "git", "push", "-q", "origin", "main")
+        head = run(self.product, "git", "rev-parse", "HEAD")
+        run(self.product, "git", "switch", "-q", "--detach", head)
+
+        with mock.patch.object(ENVIRONMENT, "qualification_publication_origin"):
+            value = ENVIRONMENT.prepare(argparse.Namespace(
+                factory_root=self.factory, product_root=self.product,
+                project="relay", root=self.root,
+            ))
+
+        self.assertEqual(value["status"], "prepared")
+        self.assertEqual(run(self.product, "git", "rev-parse", "HEAD"), head)
+        self.assertEqual(
+            run(self.product, "git", "rev-parse", "--abbrev-ref", "HEAD"),
+            "HEAD",
+        )
+
     def test_prepare_restarts_after_ready_branch_and_protected_main_advance(self) -> None:
         self.use_contract_2()
         remote = self.use_real_branch_preflight()
@@ -2171,6 +2196,8 @@ class QualificationEnvironmentTest(unittest.TestCase):
             self.product, "git", "ls-remote", "--heads", str(remote),
             "refs/heads/ticket/T-101",
         ).split()[0]
+        sealed_head = run(self.product, "git", "rev-parse", "HEAD")
+        run(self.product, "git", "switch", "-q", "--detach", sealed_head)
 
         advance = self.workspace / "protected-main-advance"
         run(
@@ -2267,6 +2294,12 @@ class QualificationEnvironmentTest(unittest.TestCase):
             Path(claim["worktree"])
             .joinpath("factory/tickets/T-101.md").read_text(),
         )
+        self.assertEqual(run(self.product, "git", "rev-parse", "HEAD"), sealed_head)
+        self.assertEqual(
+            run(self.product, "git", "rev-parse", "--abbrev-ref", "HEAD"),
+            "HEAD",
+        )
+        self.assertEqual(run(self.product, "git", "status", "--porcelain=v1"), "")
 
     def test_prepare_serializes_same_project_and_replays_exact_result(self) -> None:
         args = argparse.Namespace(
