@@ -238,6 +238,7 @@ Usage:
   $PROGRAM runtime-pin --product PRODUCT_REPO --runtime-bin NODE_BIN_DIR
   $PROGRAM provider-concurrency ACTION --sha FULL_SHA --capacity 2..4 [--approve-hash HASH]
   $PROGRAM provider-cli-pin ACTION --sha FULL_SHA [--claude-bin ABS --codex-bin ABS --cursor-bin ABS --operator-id ID] [--approve-hash HASH]
+    ACTION: plan, apply, check, endorse-plan, or endorse-apply
   $PROGRAM release setup --project SLUG --product PRODUCT_REPO --sha FULL_SHA --profile ID --operator-id ID [--repo KIT_REPO] [--runtime-bin NODE_BIN_DIR] [--claude-bin ABS --codex-bin ABS --cursor-bin ABS] [--ticket-workdir T-NNN ABS] [--skip-optional-tests]
   $PROGRAM release resume --project SLUG --sha FULL_SHA --approved-by ID
   $PROGRAM release abort  --project SLUG --sha FULL_SHA --approved-by ID
@@ -1636,7 +1637,8 @@ host_cutover_mutation_requested() {
       return 0
       ;;
     operator) [[ "$action" != "pending" ]] ;;
-    provider-concurrency|provider-cli-pin) [[ "$action" == "apply" ]] ;;
+    provider-concurrency) [[ "$action" == "apply" ]] ;;
+    provider-cli-pin) [[ "$action" == "apply" || "$action" == "endorse-apply" ]] ;;
     *) return 1 ;;
   esac
 }
@@ -1823,8 +1825,9 @@ require_provider_cli_pin_ready() {
 cmd_provider_cli_pin() {
   local action="$1" sha="$2" claude_bin="$3" codex_bin="$4" cursor_bin="$5"
   local operator="$6" approval="$7" values tree release helper
-  [[ "$action" == "plan" || "$action" == "apply" || "$action" == "check" ]] ||
-    die "provider-cli-pin action must be plan, apply, or check"
+  [[ "$action" == "plan" || "$action" == "apply" || "$action" == "check" ||
+     "$action" == "endorse-plan" || "$action" == "endorse-apply" ]] ||
+    die "provider-cli-pin action must be plan, apply, check, endorse-plan, or endorse-apply"
   validate_sha "$sha"
   if [[ "$action" == "check" ]]; then
     [[ -z "$claude_bin$codex_bin$cursor_bin$operator$approval" ]] ||
@@ -1834,6 +1837,29 @@ cmd_provider_cli_pin() {
   fi
   values="$(provider_cli_pin_helper "$sha")"
   IFS=$'\t' read -r tree release helper <<< "$values"
+  if [[ "$action" == "endorse-plan" || "$action" == "endorse-apply" ]]; then
+    [[ -z "$claude_bin$codex_bin$cursor_bin" ]] ||
+      die "provider-cli-pin endorsement does not accept CLI paths"
+    [[ "$operator" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ && "$operator" != "auto" ]] ||
+      die "provider-cli-pin requires an explicit operator ID"
+    [[ "$action" == "endorse-apply" || -z "$approval" ]] ||
+      die "--approve-hash is valid only for provider-cli-pin endorse-apply"
+    [[ "$action" == "endorse-plan" || "$approval" =~ ^[0-9a-f]{64}$ ]] ||
+      die "provider-cli-pin endorse-apply requires an exact approval hash"
+    helper="$release/scripts/owner-provider-cli-pin-endorsement.py"
+    [[ -f "$helper" && ! -L "$helper" ]] ||
+      die "release does not support unchanged provider CLI pin endorsement"
+    if [[ "$action" == "endorse-apply" ]]; then
+      require_no_host_cutover
+      python3 -I -S "$helper" --kits-root "$KITS_ROOT" --sha "$sha" \
+        --tree "$tree" --release "$release" apply \
+        --operator-id "$operator" --approve-hash "$approval"
+    else
+      python3 -I -S "$helper" --kits-root "$KITS_ROOT" --sha "$sha" \
+        --tree "$tree" --release "$release" plan --operator-id "$operator"
+    fi
+    return
+  fi
   [[ "$claude_bin" == /* && "$codex_bin" == /* && "$cursor_bin" == /* ]] ||
     die "provider-cli-pin plan/apply requires three absolute CLI paths"
   [[ "$operator" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ && "$operator" != "auto" ]] ||

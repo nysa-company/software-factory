@@ -14,6 +14,7 @@ on:
       - "scripts/factory-doctor.sh"
       - "scripts/factory-kit.sh"
       - "scripts/owner-provider-cli-pin.py"
+      - "scripts/owner-provider-cli-pin-endorsement.py"
       - "scripts/owner-runtime-pin.py"
       - "scripts/release-transaction.py"
       - "scripts/certification-preflight.py"
