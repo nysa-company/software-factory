@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import fcntl
 import hashlib
 import json
@@ -1394,6 +1395,90 @@ def doctor_allows_reconcile(
     )
 
 
+def doctor_is_stable_live(
+    value: dict[str, Any], project: str, selected: set[str], capacity: int,
+    successor: bool, factory_sha: str, source_factory_sha: str,
+    ticket_sources: dict[str, str],
+) -> bool:
+    checks = value.get("checks")
+    if not isinstance(checks, dict):
+        return False
+    runtime = checks.get("runtime")
+    provider = checks.get("isolated_provider")
+    if not isinstance(runtime, dict) or not isinstance(provider, dict):
+        return False
+    if any(
+        not isinstance(checks.get(name), dict)
+        or checks[name].get("status") != "ok"
+        or checks[name].get("incidents") not in (None, [])
+        for name in ("contract_resume", "transition_receipts")
+    ):
+        return False
+    runs = runtime.get("runs")
+    active_tickets = runtime.get("active_run_tickets")
+    leases = runtime.get("dispatch_leases")
+    count = runtime.get("active_runs")
+    live_counts = (
+        runtime.get("run_records"), runtime.get("active_run_claims"),
+        provider.get("active_attempts"),
+    )
+    if (
+        not isinstance(count, int) or isinstance(count, bool)
+        or not 1 <= count <= capacity
+        or any(
+            not isinstance(item, int) or isinstance(item, bool) or item != count
+            for item in live_counts
+        )
+        or not isinstance(runs, list) or len(runs) != count
+        or not isinstance(active_tickets, list) or len(active_tickets) != count
+        or any(
+            not isinstance(ticket, str)
+            or not TICKET.fullmatch(ticket)
+            or ticket not in selected
+            for ticket in active_tickets
+        )
+        or len(set(active_tickets)) != count
+        or not isinstance(leases, list)
+        or any(
+            not isinstance(item, dict) or item.get("state") != "active"
+            for item in leases
+        )
+        or not set(active_tickets) <= {
+            item.get("ticket") for item in leases
+            if isinstance(item, dict) and isinstance(item.get("ticket"), str)
+        }
+        or any(
+            not isinstance(run, dict)
+            or set(run) != {
+                "recovery_command", "recovery_reason", "run_id", "state", "ticket",
+            }
+            or not isinstance(run.get("run_id"), str)
+            or not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", run["run_id"])
+            or run.get("state") != "active"
+            or run.get("ticket") is not None
+            or run.get("recovery_command") is not None
+            or run.get("recovery_reason") is not None
+            for run in runs
+        )
+        or len({run["run_id"] for run in runs}) != count
+    ):
+        return False
+    normalized = copy.deepcopy(value)
+    normalized_runtime = normalized["checks"]["runtime"]
+    normalized_runtime.update({
+        "active_run_claims": 0,
+        "active_run_tickets": [],
+        "active_runs": 0,
+        "run_records": 0,
+        "runs": [],
+    })
+    normalized["checks"]["isolated_provider"]["active_attempts"] = 0
+    return doctor_allows_reconcile(
+        normalized, project, selected, capacity, successor, factory_sha,
+        source_factory_sha, ticket_sources,
+    )
+
+
 def execute(
     args: argparse.Namespace,
     doctor_result: tuple[int, dict[str, Any]] | None = None,
@@ -1416,6 +1501,27 @@ def execute(
         invoke(launcher, args.project, "doctor", phases)
         if doctor_result is None else doctor_result
     )
+    if code == 0 and not args.resume_ticket and doctor_is_stable_live(
+        doctor, args.project, selected, capacity, successor, factory_sha,
+        source_factory_sha, ticket_sources,
+    ):
+        return {
+            "doctor": doctor,
+            "doctor_status": doctor.get("overall_status"),
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "evidence_location": "doctor.checks.runtime",
+            "impact": "existing roles remain authoritative; no new provider attempt started",
+            "phases": phases,
+            "project": args.project,
+            "reason": "active_role_wait",
+            "restarts": 0,
+            "retry_argv": [
+                str(launcher), args.project, "qualification-finish", "--json",
+            ],
+            "retry_condition": "active_runs=active_run_claims=active_attempts=0",
+            "schema": SCHEMA,
+            "status": "waiting",
+        }
     if code != 0 or not doctor_allows_reconcile(
         doctor, args.project, selected, capacity, successor, factory_sha,
         source_factory_sha, ticket_sources,
