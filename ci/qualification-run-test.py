@@ -202,6 +202,34 @@ raise SystemExit(code)
         })
         return value
 
+    @classmethod
+    def live_doctor(cls, count: int = 1) -> dict[str, object]:
+        value = cls.inflight_doctor()
+        tickets = [f"T-{index}" for index in range(1, count + 1)]
+        runtime = value["checks"]["runtime"]
+        runtime.update({
+            "active_run_claims": count,
+            "active_run_tickets": tickets,
+            "active_runs": count,
+            "dispatch_lease_records": count,
+            "dispatch_leases": [
+                {"state": "active", "ticket": ticket} for ticket in tickets
+            ],
+            "run_records": count,
+            "runs": [
+                {
+                    "recovery_command": None,
+                    "recovery_reason": None,
+                    "run_id": f"live-{index}",
+                    "state": "active",
+                    "ticket": None,
+                }
+                for index in range(1, count + 1)
+            ],
+        })
+        value["checks"]["isolated_provider"]["active_attempts"] = count
+        return value
+
     @staticmethod
     def controller(
         status: str, *, active: int = 0,
@@ -1725,6 +1753,64 @@ raise SystemExit(code)
         self.assertEqual(value["reason"], "cohort_not_accounted")
         self.assertEqual(value["doctor_status"], "warning")
         self.assertEqual(self.called(), ["doctor", "reconcile"])
+
+    def test_live_replay_returns_typed_wait_without_reconcile(self) -> None:
+        doctor = self.live_doctor(3)
+
+        code, value = self.run_scenario({"doctor": doctor})
+
+        self.assertEqual((code, value["status"]), (3, "waiting"))
+        self.assertEqual(value["reason"], "active_role_wait")
+        self.assertEqual(value["doctor"], doctor)
+        self.assertEqual(value["evidence_location"], "doctor.checks.runtime")
+        self.assertEqual(
+            value["retry_condition"],
+            "active_runs=active_run_claims=active_attempts=0",
+        )
+        self.assertEqual(value["retry_argv"], [
+            str(self.launcher), "relay", "qualification-finish", "--json",
+        ])
+        self.assertEqual(self.called(), ["doctor"])
+
+    def test_live_replay_mismatches_remain_blocked(self) -> None:
+        cases = {
+            "run-count": [("checks.runtime.run_records", 2)],
+            "claim-count": [("checks.runtime.active_run_claims", 2)],
+            "attempt-count": [("checks.isolated_provider.active_attempts", 2)],
+            "boolean-attempt-count": [
+                ("checks.isolated_provider.active_attempts", True),
+            ],
+            "ticket-count": [("checks.runtime.active_run_tickets", [])],
+            "foreign-ticket": [("checks.runtime.active_run_tickets.0", "T-9")],
+            "missing-lease": [("checks.runtime.dispatch_leases.0.ticket", "T-2")],
+            "run-state": [("checks.runtime.runs.0.state", "stale")],
+            "run-ticket": [("checks.runtime.runs.0.ticket", "T-1")],
+            "run-identity": [("checks.runtime.runs.0.run_id", "bad/run")],
+            "provider-token": [("checks.isolated_provider.active_tokens", 1)],
+            "launch-lock": [("checks.runtime.locks.launch", True)],
+            "stale-run": [("checks.runtime.stale_runs", 1)],
+            "stale-lease": [("checks.runtime.dispatch_leases.0.state", "stale")],
+            "transition-warning": [
+                ("checks.transition_receipts.status", "warning"),
+            ],
+        }
+        for name, changes in cases.items():
+            with self.subTest(name=name):
+                self.calls.unlink(missing_ok=True)
+                doctor = self.live_doctor()
+                for dotted, replacement in changes:
+                    parent = doctor
+                    parts = dotted.split(".")
+                    for part in parts[:-1]:
+                        parent = parent[int(part)] if isinstance(parent, list) else parent[part]
+                    if isinstance(parent, list):
+                        parent[int(parts[-1])] = replacement
+                    else:
+                        parent[parts[-1]] = replacement
+                code, value = self.run_scenario({"doctor": doctor})
+                self.assertEqual((code, value["status"]), (3, "blocked"))
+                self.assertEqual(value["reason"], "doctor_not_ready")
+                self.assertEqual(self.called(), ["doctor"])
 
     def test_successor_stale_selected_lease_reaches_controller_recovery(self) -> None:
         manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
