@@ -1037,6 +1037,14 @@ start_lease_heartbeat() {
   return 1
 }
 
+has_cli_orphan_recovery_records() {
+  local path
+  [[ "$CLI_CONCURRENT_RUN" -eq 1 && "$CLI_ATTEMPT_ACTIVE" -eq 1 ]] || return 1
+  for path in "$MANIFEST" "$RUN_PID_FILE" "$RUN_WRAPPER_FILE" "$RUN_SUBMITTED_FILE"; do
+    [[ -n "$path" && -f "$path" && ! -L "$path" ]] || return 1
+  done
+}
+
 stop_lease_heartbeat() {
   local status=0 current_start current_pgid requested=0
   [[ -n "$LEASE_HEARTBEAT_PID" ]] || return 0
@@ -1080,8 +1088,10 @@ stop_lease_heartbeat() {
     LEASE_HEARTBEAT_FAILED=1
     return 1
   fi
-  [[ -z "$RUN_WRAPPER_FILE" ]] || rm -f "$RUN_WRAPPER_FILE"
-  RUN_WRAPPER_FILE=""
+  if ! has_cli_orphan_recovery_records; then
+    [[ -z "$RUN_WRAPPER_FILE" ]] || rm -f "$RUN_WRAPPER_FILE"
+    RUN_WRAPPER_FILE=""
+  fi
 }
 
 verify_control_interval_integrity() {
@@ -1462,6 +1472,16 @@ PY
 }
 
 load_cli_attempt() {
+  local attempt_try
+  for attempt_try in 1 2 3; do
+    load_cli_attempt_once && return 0
+    [[ "$attempt_try" -eq 3 ]] || sleep 0.1
+  done
+  echo "provider coordinator status could not be read or validated after 3 attempts" >&2
+  return 1
+}
+
+load_cli_attempt_once() {
   [[ -n "$CLI_ATTEMPT_ID" ]] || return 1
   local output parsed remainder submitted
   output="$(python3 "$KIT_DIR/scripts/provider-coordinator.py" \
@@ -1970,12 +1990,16 @@ release_active_run_claim() {
 
 cleanup() {
   local status=$? accounting_finalized=0 submission_state_verified=0
+  local retain_orphan_recovery=0
   stop_lease_heartbeat || true
   terminate_run_group || true
   if capture_submission_record; then
     submission_state_verified=1
   else
     echo "WARNING: provider submission state could not be verified" >&2
+  fi
+  if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]] && has_cli_orphan_recovery_records; then
+    retain_orphan_recovery=1
   fi
   if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
     release_cursor_account_lease ||
@@ -2005,14 +2029,18 @@ cleanup() {
       "$ROLE_GUARD_ROOT"/corepack
     rmdir "$ROLE_GUARD_ROOT" 2>/dev/null || true
   fi
-  if [[ -n "$RUN_WRAPPER_FILE" && -z "$LEASE_HEARTBEAT_PID" ]]; then
-    rm -f "$RUN_WRAPPER_FILE"
-    RUN_WRAPPER_FILE=""
+  if [[ "$retain_orphan_recovery" -eq 0 ]]; then
+    if [[ -n "$RUN_WRAPPER_FILE" && -z "$LEASE_HEARTBEAT_PID" ]]; then
+      rm -f "$RUN_WRAPPER_FILE"
+      RUN_WRAPPER_FILE=""
+    fi
+    [[ -z "$RUN_SUBMITTED_FILE" ]] || rm -f "$RUN_SUBMITTED_FILE"
+  else
+    echo "WARNING: retaining wrapper and submission evidence for supported provider recovery" >&2
   fi
   [[ -z "$RUN_READY_FILE" ]] || rm -f "$RUN_READY_FILE"
   [[ -z "$RUN_GO_FILE" ]] || rm -f "$RUN_GO_FILE"
   [[ -z "$RUN_GATE_FILE" ]] || rm -f "$RUN_GATE_FILE"
-  [[ -z "$RUN_SUBMITTED_FILE" ]] || rm -f "$RUN_SUBMITTED_FILE"
   [[ -z "$RUN_OUTPUT_TEMP" ]] || rm -f "$RUN_OUTPUT_TEMP"
   exec 8<&- 9>&- 2>/dev/null || true
   if [[ "$CLI_ATTEMPT_ACTIVE" -eq 1 ]]; then
@@ -2045,7 +2073,7 @@ cleanup() {
           "$MANIFEST_PHASE" != "terminalizing" ]]; then
       rm -f "$RUN_PID_FILE"
       RUN_PID_FILE=""
-    elif [[ "$CLI_ATTEMPT_ACTIVE" -eq 1 ]]; then
+    elif [[ "$retain_orphan_recovery" -eq 1 ]]; then
       echo "WARNING: retaining $RUN_PID_FILE for provider reconciliation" >&2
     else
       echo "WARNING: retaining $RUN_PID_FILE until terminal accounting is durable" >&2
@@ -2074,6 +2102,8 @@ cleanup() {
   if [[ "$OWNS_ACTIVE_RUN" -eq 1 ]]; then
     if [[ "$RUN_GROUP_TERMINATED" -ne 1 ]]; then
       echo "WARNING: run claim retained because its process group survived" >&2
+    elif [[ "$retain_orphan_recovery" -eq 1 ]]; then
+      echo "WARNING: run claim retained with active provider accounting; run Factory Doctor for supported recovery" >&2
     elif ! release_active_run_claim; then
       echo "WARNING: run claim ownership changed; successor state was not removed" >&2
     fi
@@ -3442,11 +3472,10 @@ if [[ "$RUN_GROUP_TERMINATED" -eq 1 ]]; then
 else
   echo "WARNING: process group $RUN_PGID survived; PID and Cursor account lease records retained for kill-switch" >&2
 fi
-rm -f "$RUN_READY_FILE" "$RUN_GO_FILE" "$RUN_GATE_FILE" "$RUN_SUBMITTED_FILE"
+rm -f "$RUN_READY_FILE" "$RUN_GO_FILE" "$RUN_GATE_FILE"
 RUN_READY_FILE=""
 RUN_GO_FILE=""
 RUN_GATE_FILE=""
-RUN_SUBMITTED_FILE=""
 exec 9>&-
 ROLE_OUTPUT_VALID=1
 if ! RUN_OUTPUT_SHA256="$(

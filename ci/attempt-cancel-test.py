@@ -528,6 +528,34 @@ class AttemptCancellationTest(unittest.TestCase):
                     self.root, "T-1", "run-1", "operator_requested", "9" * 32,
                 )
                 self.assertEqual(plan["schema"], CANCEL.ORPHAN_PLAN_SCHEMA)
+                original_manifest = (self.runs / "run-1.meta").read_bytes()
+                submitted = self.provider_command(
+                    database, "status", "--attempt-id", attempt_id,
+                )["attempts"][0]
+                values.update({
+                    "task_submitted": "1",
+                    "submitted_at_epoch_ns": str(
+                        CANCEL.canonical_submission_ns(submitted)
+                    ),
+                })
+                self.write_meta(values)
+                submitted_plan = CANCEL.calculate(
+                    self.root, "T-1", "run-1", "operator_requested", "8" * 32,
+                )
+                self.assertEqual(
+                    submitted_plan["schema"], CANCEL.ORPHAN_PLAN_SCHEMA,
+                )
+                values["submitted_at_epoch_ns"] = str(
+                    int(values["submitted_at_epoch_ns"]) - 1
+                )
+                self.write_meta(values)
+                with self.assertRaisesRegex(
+                    CANCEL.CancelError, "disagrees with the run manifest",
+                ):
+                    CANCEL.calculate(
+                        self.root, "T-1", "run-1", "operator_requested", "7" * 32,
+                    )
+                (self.runs / "run-1.meta").write_bytes(original_manifest)
                 saved_claim = claim.with_name("saved-builder.lock")
                 claim.rename(saved_claim)
                 claim.mkdir()
