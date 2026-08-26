@@ -650,8 +650,10 @@ if name == "agent":
 elif name == "claude":
     print(json.dumps({{"type":"result","subtype":"success","is_error":False,"num_turns":1,"total_cost_usd":0.01,"result":text}}))
 else:
-    print(json.dumps({{"type":"item.completed","item":{{"type":"agent_message","text":text}}}}))
-    print(json.dumps({{"input_tokens":10,"output_tokens":10}}))
+    print(json.dumps({{"type":"thread.started","thread_id":"thread-1"}}))
+    print(json.dumps({{"type":"turn.started"}}))
+    print(json.dumps({{"type":"item.completed","item":{{"id":"item-1","type":"agent_message","text":text}}}}))
+    print(json.dumps({{"type":"turn.completed","usage":{{"input_tokens":10,"output_tokens":10}}}}))
 raise SystemExit(1 if failed else 0)
 '''
 

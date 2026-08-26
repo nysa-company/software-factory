@@ -19,7 +19,7 @@ import stat
 import subprocess
 import sys
 import tempfile
-from threading import Event, Lock, local
+from threading import Event, Lock, RLock, local
 import time
 from typing import Any
 from urllib.parse import urlsplit
@@ -102,6 +102,9 @@ TERMINAL_ACCOUNTING = {
     "completed", "launch_void", "abandoned_conservative", "cancelled",
     "cancelled_conservative",
 }
+QUALIFICATION_DELIVERY_RETRY_EXITS = frozenset({
+    "role_exit_dirty", "role_exit_invalid_output", "role_exit_no_commit",
+})
 CONTRACT_RESUME_REFUSALS = frozenset({
     "resume_ancestry_invalid",
     "resume_commit_content_mismatch",
@@ -641,7 +644,8 @@ class Controller:
         self.fallback_lock = Lock()
         self.publication_lock = Lock()
         self.qualification_cohort_error = Event()
-        self.qualification_launch_lock = Lock()
+        self.qualification_latch_pending = Event()
+        self.qualification_launch_lock = RLock()
         # ponytail: cells share one Git common directory; use per-cell refs only if refresh throughput matters.
         self.git_lock = Lock()
         # ponytail: closeouts are rare; serialize them until throughput requires a queue.
@@ -763,6 +767,145 @@ class Controller:
             ):
                 return
         self.event(name, ticket, **details)
+
+    def qualification_delivery_retry(
+        self, claim: dict[str, Any], terminal: dict[str, Any],
+    ) -> tuple[str, str]:
+        role_exit = terminal.get("role_exit", "")
+        run_id = terminal.get("run_id", "")
+        role = claim.get("role", "")
+        receipt = claim.get("receipt", "")
+        input_head = terminal.get("role_head_before", "")
+        if (
+            not self.qualification
+            or role_exit not in QUALIFICATION_DELIVERY_RETRY_EXITS
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id)
+            or not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", role)
+            or not DIGEST.fullmatch(receipt)
+            or not SHA.fullmatch(input_head)
+            or terminal.get("transition_receipt_sha256") != receipt
+            or terminal.get("ticket") != claim.get("ticket")
+            or terminal.get("role") != role
+            or terminal.get("kit_sha") != self.release_path.name
+            or terminal.get("phase") != "completed"
+            or terminal.get("exit_status") != "11"
+            or terminal.get("go_issued") != "1"
+            or terminal.get("task_submitted") != "1"
+            or terminal.get("accounting_state") not in {
+                "completed", "abandoned_conservative",
+            }
+        ):
+            return "unavailable", ""
+        transition = self.transition_receipt(claim, record=False)
+        branch = self.cell_git(
+            claim, "symbolic-ref", "--quiet", "--short", "HEAD",
+        )
+        status = self.cell_git(
+            claim, "status", "--porcelain=v1", "-z", "--untracked-files=all",
+        )
+        remote_status, local_head, remote_head = self.remote_cell_head_status(claim)
+        route_path = self.route_path(claim)
+        passport_path = self.state / "passports" / f"{claim['ticket']}.json"
+        try:
+            route_info = route_path.lstat()
+            if (
+                not stat.S_ISREG(route_info.st_mode)
+                or route_info.st_uid != os.geteuid()
+                or route_info.st_nlink != 1
+                or stat.S_IMODE(route_info.st_mode) & 0o022
+                or route_info.st_size > 1_000_000
+            ):
+                return "unavailable", ""
+            route_digest = hashlib.sha256(route_path.read_bytes()).hexdigest()
+            passport = self.authenticated_operator_passport(claim["ticket"])
+            passport_file = (
+                hashlib.sha256(passport_path.read_bytes()).hexdigest()
+                if passport is not None else None
+            )
+            exported = (
+                passport is not None
+                and self.terminal_already_exported(claim, terminal)
+            )
+        except (
+            ControllerError, json.JSONDecodeError, OSError, UnicodeError,
+        ):
+            return "unavailable", ""
+        if (
+            terminal.get("role_branch_before") != claim.get("branch")
+            or terminal.get("role_remote_before") != input_head
+            or terminal.get("role_head_after") != input_head
+            or transition is None
+            or transition.get("receipt_sha256") != receipt
+            or transition.get("role") != role
+            or transition.get("head_sha") != input_head
+            or transition.get("consumed") is not True
+            or transition.get("stage") not in {
+                f"CATCHUP {role}", f"FIX {role}", f"RUN {role}",
+            }
+            or transition.get("route_plan_sha256") != route_digest
+            or terminal.get("route_plan_sha256") != route_digest
+            or not (
+                transition.get("passport_sha256") == passport_file
+                or exported
+            )
+            or branch.returncode
+            or branch.stdout.strip() != claim.get("branch")
+            or status.returncode
+            or status.stdout
+            or remote_status != "pushed"
+            or local_head != input_head
+            or remote_head != input_head
+        ):
+            return "unavailable", ""
+        matches = []
+        for path in sorted(self.events.glob("*.json")):
+            value = read(path)
+            digest = value.get("event_sha256", "")
+            unsigned = dict(value)
+            unsigned.pop("event_sha256", None)
+            if digest != hashlib.sha256(canonical(unsigned).encode()).hexdigest():
+                raise ControllerError("controller event evidence is invalid")
+            if (
+                value.get("schema") == EVENT_SCHEMA
+                and value.get("event") == "role_delivery_retry"
+                and value.get("factory_sha") == self.release_path.name
+                and value.get("ticket") == claim["ticket"]
+                and value.get("role") == role
+                and value.get("input_head") == input_head
+                and value.get("qualification_generation")
+                == self.qualification["generation"]
+                and value.get("qualification_manifest_sha256")
+                == self.qualification_manifest_sha256
+            ):
+                matches.append(value)
+        if len(matches) > 1:
+            raise ControllerError("role delivery retry evidence is ambiguous")
+        if matches:
+            prior = matches[0]
+            prior_run = prior.get("run_id", "")
+            if (
+                not re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", prior_run,
+                )
+                or prior.get("role_exit")
+                not in QUALIFICATION_DELIVERY_RETRY_EXITS
+                or not DIGEST.fullmatch(
+                    prior.get("transition_receipt_sha256", ""),
+                )
+            ):
+                raise ControllerError("role delivery retry evidence is invalid")
+            if prior_run == run_id and (
+                prior.get("role_exit") != role_exit
+                or prior.get("transition_receipt_sha256") != receipt
+            ):
+                raise ControllerError("role delivery retry replay changed")
+            return ("retry" if prior_run == run_id else "exhausted"), prior_run
+        self.event(
+            "role_delivery_retry", claim["ticket"], run_id=run_id,
+            input_head=input_head, role=role, role_exit=role_exit,
+            transition_receipt_sha256=receipt,
+        )
+        return "retry", run_id
 
     def authenticated_operator_passport(
         self, ticket: str,
@@ -1064,7 +1207,16 @@ class Controller:
     def recover_operator_action_events(
         self, claims: list[dict[str, Any]],
     ) -> None:
+        self.qualification_mutation(
+            None, self._recover_operator_action_events, claims,
+        )
+
+    def _recover_operator_action_events(
+        self, claims: list[dict[str, Any]],
+    ) -> None:
         """Backfill crash-lost operator events from exact durable boundaries."""
+        if self.qualification and self.qualification_cohort_error.is_set():
+            return
         candidates = [
             claim for claim in claims
             if claim.get("status") in {"blocked", "budget", "claimed", "waiting"}
@@ -2949,7 +3101,37 @@ class Controller:
         )
         return failure
 
+    def qualification_mutation(
+        self, stopped: Any, action: Any, *arguments: Any,
+    ) -> Any:
+        if self.qualification_stopped():
+            return stopped
+        gate = (
+            self.qualification_launch_lock
+            if self.qualification else nullcontext()
+        )
+        with gate:
+            if self.qualification_stopped():
+                return stopped
+            return action(*arguments)
+
+    def qualification_stopped(self) -> bool:
+        return bool(
+            self.qualification
+            and (
+                self.qualification_latch_pending.is_set()
+                or self.qualification_cohort_error.is_set()
+            )
+        )
+
     def claim_new(
+        self, existing: list[dict[str, Any]], reserved_capacity: int = 0
+    ) -> list[dict[str, Any]]:
+        return self.qualification_mutation(
+            list(existing), self._claim_new, existing, reserved_capacity,
+        )
+
+    def _claim_new(
         self, existing: list[dict[str, Any]], reserved_capacity: int = 0
     ) -> list[dict[str, Any]]:
         claims = list(existing)
@@ -2985,6 +3167,8 @@ class Controller:
                 raise ControllerError("qualification claim acknowledgement is malformed")
             cohort_ack_path.unlink()
         if self.qualification_cohort_accounted(claims):
+            return claims
+        if self.qualification and self.qualification_cohort_error.is_set():
             return claims
         if not self.qualification:
             self.model_admission_outcome = None
@@ -3397,7 +3581,17 @@ class Controller:
     def recover_missing_passport_claims(
         self, claims: list[dict[str, Any]]
     ) -> None:
-        if not self.qualification:
+        self.qualification_mutation(
+            None, self._recover_missing_passport_claims, claims,
+        )
+
+    def _recover_missing_passport_claims(
+        self, claims: list[dict[str, Any]]
+    ) -> None:
+        if (
+            not self.qualification
+            or self.qualification_cohort_error.is_set()
+        ):
             return
         targets = [
             ticket for ticket in self.qualification["tickets"]
@@ -3857,6 +4051,11 @@ class Controller:
         return Path(claim["worktree"]) / f"factory/route-plans/{claim['ticket']}.json"
 
     def pin_routes(self, claims: list[dict[str, Any]]) -> list[dict[str, str]]:
+        return self.qualification_mutation([], self._pin_routes, claims)
+
+    def _pin_routes(self, claims: list[dict[str, Any]]) -> list[dict[str, str]]:
+        if self.qualification and self.qualification_cohort_error.is_set():
+            return []
         missing = [claim for claim in claims if not self.route_path(claim).exists()]
         if not missing:
             return []
@@ -3865,7 +4064,10 @@ class Controller:
             arguments.extend([
                 "--ticket", claim["ticket"], "--workdir", claim["worktree"],
             ])
-        pin = self.json_call(*arguments, "--json", allow=(0, 2), timeout=None)
+        pin = self.json_call(
+            *arguments, "--json", allow=(0, 2),
+            timeout=300 if self.qualification else None,
+        )
         if pin.get("status") == "error":
             failure = self.model_resolution_failure(
                 pin, "model pin resolution failed",
@@ -3948,7 +4150,7 @@ class Controller:
             result = self.json_call(
                 "state-machine", "--ticket", claim["ticket"],
                 "--lease", claim["lease"], "--workdir", claim["worktree"],
-                "--json", timeout=None,
+                "--json", timeout=300 if self.qualification else None,
             )
             if (
                 not valid_transition_evidence(result, claim["ticket"])
@@ -4190,7 +4392,16 @@ class Controller:
                     )
 
     def maintain_successor_leases(self, claims: list[dict[str, Any]]) -> None:
-        if not self.qualification or self.qualification.get("mode") != "successor":
+        self.qualification_mutation(
+            None, self._maintain_successor_leases, claims,
+        )
+
+    def _maintain_successor_leases(self, claims: list[dict[str, Any]]) -> None:
+        if (
+            not self.qualification
+            or self.qualification_cohort_error.is_set()
+            or self.qualification.get("mode") != "successor"
+        ):
             return
         for claim in claims:
             if self.role_active(claim):
@@ -5602,7 +5813,7 @@ class Controller:
             transition = self.json_call(
                 "state-machine", "--ticket", claim["ticket"],
                 "--lease", lease, "--workdir", claim["worktree"],
-                "--json", timeout=None,
+                "--json", timeout=300 if self.qualification else None,
             )
             receipt = self.transition_receipt(claim, allow_prior=True)
 
@@ -6616,6 +6827,15 @@ class Controller:
     def recover_prior_maintenance_receipts(
         self, claims: list[dict[str, Any]],
     ) -> None:
+        self.qualification_mutation(
+            None, self._recover_prior_maintenance_receipts, claims,
+        )
+
+    def _recover_prior_maintenance_receipts(
+        self, claims: list[dict[str, Any]],
+    ) -> None:
+        if self.qualification and self.qualification_cohort_error.is_set():
+            return
         for claim in claims:
             if claim["ticket"] not in self.prior_transition_tickets:
                 continue
@@ -6671,7 +6891,8 @@ class Controller:
                 transition = self.json_call(
                     "state-machine", "--ticket", claim["ticket"],
                     "--lease", claim["lease"], "--workdir",
-                    claim["worktree"], "--json", timeout=None,
+                    claim["worktree"], "--json",
+                    timeout=300 if self.qualification else None,
                 )
             except (
                 ControllerError, json.JSONDecodeError, OSError,
@@ -6862,6 +7083,15 @@ class Controller:
     def readmit_prior_provider_failures(
         self, claims: list[dict[str, Any]],
     ) -> None:
+        self.qualification_mutation(
+            None, self._readmit_prior_provider_failures, claims,
+        )
+
+    def _readmit_prior_provider_failures(
+        self, claims: list[dict[str, Any]],
+    ) -> None:
+        if self.qualification and self.qualification_cohort_error.is_set():
+            return
         for claim in claims:
             if self.prior_provider_failure_successor(claim):
                 self.prior_transition_tickets.discard(claim["ticket"])
@@ -6956,6 +7186,16 @@ class Controller:
     def recover_changed_state_machine_refusals(
         self, claims: list[dict[str, Any]], protected_main: str | None,
     ) -> None:
+        self.qualification_mutation(
+            None, self._recover_changed_state_machine_refusals,
+            claims, protected_main,
+        )
+
+    def _recover_changed_state_machine_refusals(
+        self, claims: list[dict[str, Any]], protected_main: str | None,
+    ) -> None:
+        if self.qualification and self.qualification_cohort_error.is_set():
+            return
         for claim in claims:
             lease = ""
             attempt_path = (
@@ -7152,7 +7392,7 @@ class Controller:
                     transition = self.json_call(
                         "state-machine", "--ticket", claim["ticket"],
                         "--lease", lease, "--workdir", claim["worktree"],
-                        "--json", timeout=None,
+                        "--json", timeout=300 if self.qualification else None,
                     )
                     current = self.transition_receipt(claim, record=False)
                 stage = current.get("stage", "") if current is not None else ""
@@ -7263,6 +7503,13 @@ class Controller:
             )
 
     def recover_terminal_requests(self, claims: list[dict[str, Any]]) -> None:
+        self.qualification_mutation(
+            None, self._recover_terminal_requests, claims,
+        )
+
+    def _recover_terminal_requests(self, claims: list[dict[str, Any]]) -> None:
+        if self.qualification and self.qualification_cohort_error.is_set():
+            return
         for claim in claims:
             passport_path = self.state / "passports" / f"{claim['ticket']}.json"
             request_path = self.terminal_request_path(claim["ticket"])
@@ -7547,7 +7794,10 @@ class Controller:
         name: str,
         concurrent: bool = False,
     ) -> None:
-        def recover(claim: dict[str, Any]) -> None:
+        if self.qualification and self.qualification_cohort_error.is_set():
+            return
+
+        def recover_locked(claim: dict[str, Any]) -> None:
             if (
                 self.role_active(claim)
                 or claim["ticket"] in self.invalid_transition_tickets
@@ -7695,6 +7945,9 @@ class Controller:
                         "ticket_recovery_lease_release_waiting", claim["ticket"],
                         recovery=name,
                     )
+
+        def recover(claim: dict[str, Any]) -> None:
+            self.qualification_mutation(None, recover_locked, claim)
 
         if concurrent and len(claims) > 1:
             with ThreadPoolExecutor(
@@ -7934,7 +8187,8 @@ class Controller:
                 result = self.json_call(
                     "state-machine", "--ticket", claim["ticket"],
                     "--lease", claim["lease"], "--workdir", claim["worktree"],
-                    "--expected-head", local_head, "--json", timeout=None,
+                    "--expected-head", local_head, "--json",
+                    timeout=300 if self.qualification else None,
                 )
                 current = self.operator_transition(claim)
                 if (
@@ -8075,7 +8329,7 @@ class Controller:
                 transition = self.json_call(
                     "state-machine", "--ticket", claim["ticket"],
                     "--lease", claim["lease"], "--workdir", claim["worktree"],
-                    "--json", timeout=None,
+                    "--json", timeout=300 if self.qualification else None,
                 )
                 if (
                     not valid_transition_evidence(transition, claim["ticket"])
@@ -10837,7 +11091,8 @@ class Controller:
             raise ControllerError("stranded route migration source is invalid")
         preview = self.json_call(
             "models", "migrate-plan", "--ticket", claim["ticket"],
-            "--workdir", claim["worktree"], "--json", timeout=None,
+            "--workdir", claim["worktree"], "--json",
+            timeout=300 if self.qualification else None,
         )
         preview_keys = {
             "journal_kit_sha", "journal_revision_count",
@@ -10869,7 +11124,8 @@ class Controller:
             "--workdir", claim["worktree"],
             "--approve-hash", preview["preview_hash"],
             "--readiness-hash", preview["readiness_sha256"],
-            "--approved-by", "release-upgrade", "--json", timeout=None,
+            "--approved-by", "release-upgrade", "--json",
+            timeout=300 if self.qualification else None,
         )
         result_keys = preview_keys | {"approved_by", "commit_sha"}
         if result.get("recovered") is True:
@@ -12237,7 +12493,8 @@ class Controller:
                     transition = self.json_call(
                         "state-machine", "--ticket", claim["ticket"],
                         "--lease", claim["lease"], "--workdir",
-                        claim["worktree"], "--json", timeout=None,
+                        claim["worktree"], "--json",
+                        timeout=300 if self.qualification else None,
                     )
                     persisted = self.operator_transition(claim)
                 if (
@@ -12384,6 +12641,14 @@ class Controller:
 
     def finish_pending_run(self, claim: dict[str, Any]) -> bool | None:
         """Return None for a live receipt, False for a terminal stop, else True."""
+        gate = (
+            self.qualification_launch_lock
+            if self.qualification else nullcontext()
+        )
+        with gate:
+            return self._finish_pending_run(claim)
+
+    def _finish_pending_run(self, claim: dict[str, Any]) -> bool | None:
         if not claim.get("receipt"):
             return True
         if self.role_active(claim):
@@ -12391,6 +12656,12 @@ class Controller:
             return None
         terminal = self.terminal_for_receipt(claim["ticket"], claim["receipt"])
         if terminal is None:
+            if self.qualification_stopped():
+                claim["status"] = "blocked"
+                claim["blocked_reason"] = "missing-terminal"
+                self.save_claim(claim)
+                self.release_ticket_lease(claim)
+                return False
             claim.update(receipt="", role="", status="claimed")
             self.save_claim(claim)
             return True
@@ -12413,7 +12684,8 @@ class Controller:
             return False
         if terminal.get("accounting_state") == "launch_void":
             if (
-                self.typed_launch_void(terminal)
+                not self.qualification_stopped()
+                and self.typed_launch_void(terminal)
                 and SHA.fullmatch(terminal.get("kit_sha", ""))
                 and terminal["kit_sha"] != self.release_path.name
             ):
@@ -12448,6 +12720,7 @@ class Controller:
         )
         qualification_fallback = (
             self.qualification
+            and not self.qualification_stopped()
             and submitted_provider_failure(terminal)
         )
         if qualification_fallback and self.direct_model_identity_candidate(
@@ -12485,6 +12758,7 @@ class Controller:
             terminal.get("exit_status") != "0"
             or terminal.get("role_exit") != "ok"
         )
+        delivery_retry = ("unavailable", "")
         if not qualification_fallback and terminal_failed:
             try:
                 dirty = self.cell_git(
@@ -12512,10 +12786,16 @@ class Controller:
                     reason=safe_error(str(error)),
                 )
                 return False
+            if not self.qualification_stopped():
+                delivery_retry = self.qualification_delivery_retry(claim, terminal)
         if (
             not qualification_fallback
-            and terminal.get("role_exit") != "role_exit_invalid_output"
             and terminal_failed
+            and delivery_retry[0] != "retry"
+            and not (
+                terminal.get("role_exit") == "role_exit_invalid_output"
+                and not self.qualification
+            )
         ):
             self.latch_qualification_cohort_error()
         if not qualification_fallback:
@@ -12537,15 +12817,20 @@ class Controller:
             self.remove_cell(claim)
             self.event("attempt_cancelled", claim["ticket"])
             return False
-        if terminal.get("role_exit") == "role_exit_invalid_output":
+        if (
+            delivery_retry[0] == "retry"
+            or terminal.get("role_exit") == "role_exit_invalid_output"
+            and not self.qualification
+        ):
             self.migrate_passport(claim, publication)
             rejected_role = claim["role"]
             claim.update(receipt="", role="", status="claimed")
             self.save_claim(claim)
-            self.event(
-                "role_output_rejected", claim["ticket"], role=rejected_role,
-                run_id=terminal.get("run_id"),
-            )
+            if terminal.get("role_exit") == "role_exit_invalid_output":
+                self.event(
+                    "role_output_rejected", claim["ticket"], role=rejected_role,
+                    run_id=terminal.get("run_id"),
+                )
             return True
         if terminal_failed:
             if qualification_fallback:
@@ -12617,6 +12902,14 @@ class Controller:
                 role=claim["role"], role_exit=terminal.get("role_exit"),
                 run_id=terminal.get("run_id"),
                 terminal_reason_code=terminal.get("terminal_reason_code", ""),
+                **(
+                    {
+                        "delivery_retry_exhausted": True,
+                        "first_run_id": delivery_retry[1],
+                        "input_head": terminal.get("role_head_before"),
+                    }
+                    if delivery_retry[0] == "exhausted" else {}
+                ),
             )
             return False
         if claim["role"] == "reviewer":
@@ -13250,7 +13543,7 @@ class Controller:
         failed_checks: list[str], publication: dict[str, Any] | None = None,
         *, primed_planner: bool = False,
     ) -> bool:
-        if self.qualification and self.qualification_cohort_error.is_set():
+        if self.qualification_stopped():
             return False
         self.ensure_execution_cell(claim)
         if self.qualification:
@@ -13405,8 +13698,10 @@ class Controller:
                 self.qualification_launch_lock
                 if self.qualification else nullcontext()
             )
+            if self.qualification_stopped():
+                return False
             with launch_gate:
-                if self.qualification and self.qualification_cohort_error.is_set():
+                if self.qualification_stopped():
                     return False
                 claim.update(receipt=receipt, role=role, status="running")
                 self.save_claim(claim)
@@ -13458,12 +13753,13 @@ class Controller:
 
     def latch_qualification_cohort_error(self) -> None:
         if self.qualification:
+            self.qualification_latch_pending.set()
             with self.qualification_launch_lock:
                 self.qualification_cohort_error.set()
 
     def reconcile_ticket(self, claim: dict[str, Any]) -> dict[str, str]:
         try:
-            if self.qualification and self.qualification_cohort_error.is_set():
+            if self.qualification_stopped():
                 if claim.get("receipt"):
                     self.ensure_lease(claim, "terminal-accounting")
                     finished = self.finish_pending_run(claim)
@@ -13497,7 +13793,7 @@ class Controller:
                     ),
                     "ticket": claim["ticket"],
                 }
-            if self.qualification and self.qualification_cohort_error.is_set():
+            if self.qualification_stopped():
                 return {
                     "status": "waiting", "ticket": claim["ticket"],
                     "wait_reason": "qualification-cohort-error",
@@ -13564,7 +13860,7 @@ class Controller:
                     "state-machine", "--ticket", claim["ticket"],
                     "--lease", claim["lease"],
                     "--workdir", claim["worktree"], "--json",
-                    timeout=None,
+                    timeout=300 if self.qualification else None,
                 )
             )
             maintenance = (self.product / "factory/MAINTENANCE").exists()
@@ -13766,7 +14062,7 @@ class Controller:
                 if (
                     not launched
                     and self.qualification
-                    and self.qualification_cohort_error.is_set()
+                    and self.qualification_stopped()
                 ):
                     return {
                         "status": "waiting", "ticket": claim["ticket"],
@@ -14254,8 +14550,7 @@ class Controller:
     def reconcile_ticket_until_wait(self, claim: dict[str, Any]) -> dict[str, str]:
         while True:
             if (
-                self.qualification
-                and self.qualification_cohort_error.is_set()
+                self.qualification_stopped()
                 and not claim.get("receipt")
             ):
                 if not self.role_active(claim):
@@ -14289,12 +14584,47 @@ class Controller:
             self.mark_reconciling(claim, after_progress=True)
 
     def reconcile(self, *, prime: bool = False) -> dict[str, Any]:
+        self.qualification_latch_pending.clear()
         self.qualification_cohort_error.clear()
         self.admission_refusals = {}
         self.model_admission_outcome = None
         self.invalid_transition_tickets.clear()
         self.prior_transition_tickets.clear()
         existing = self.load_claims()
+        if self.qualification:
+            for claim in existing:
+                if not claim.get("receipt") or self.role_active(claim):
+                    continue
+                terminal = self.terminal_for_receipt(
+                    claim["ticket"], claim["receipt"],
+                )
+                if (
+                    terminal is None
+                    or terminal.get("role_exit")
+                    not in QUALIFICATION_DELIVERY_RETRY_EXITS
+                ):
+                    continue
+                try:
+                    dirty = self.cell_git(
+                        claim, "status", "--porcelain=v1", "-z",
+                        "--untracked-files=all",
+                    )
+                    if dirty.returncode:
+                        raise ControllerError(
+                            "role retry restart status is unavailable"
+                        )
+                    if dirty.stdout:
+                        self.quarantine_dirty_role_output(claim, terminal)
+                except (
+                    ControllerError, HandoffError, OSError,
+                    subprocess.SubprocessError, UnicodeError,
+                ):
+                    self.latch_qualification_cohort_error()
+                    continue
+                if self.qualification_stopped():
+                    continue
+                if self.qualification_delivery_retry(claim, terminal)[0] != "retry":
+                    self.latch_qualification_cohort_error()
         if prime and not self.qualification:
             raise ControllerError("qualification prime requires qualification mode")
         if prime and self.qualification_marker("qualification-restart-boundary"):
@@ -14315,7 +14645,11 @@ class Controller:
             raise ControllerError(
                 "repository-test Planning canary requires empty execution state"
             )
-        qualification_preflight = self.qualification_admission_preflight(existing)
+        qualification_preflight = (
+            None
+            if self.qualification_stopped()
+            else self.qualification_admission_preflight(existing)
+        )
         if qualification_preflight is not None:
             return {
                 "active": sum(self.consumes_capacity(item) for item in existing),
@@ -14367,10 +14701,11 @@ class Controller:
             self.release(claim)
         existing = [claim for claim in existing if claim not in completed]
         self.reclaim_orphaned_execution_cells(existing)
-        for claim in existing:
-            if claim["ticket"] not in self.invalid_transition_tickets:
-                self.operator_transition(claim)
-        self.quarantine_invalid_transition_claims(existing)
+        if not self.qualification_stopped():
+            for claim in existing:
+                if claim["ticket"] not in self.invalid_transition_tickets:
+                    self.operator_transition(claim)
+            self.quarantine_invalid_transition_claims(existing)
         self.release_inactive_ticket_leases(existing)
         self.recover_changed_state_machine_refusals(existing, protected_main)
         self.recover_operator_action_events([
@@ -14429,6 +14764,11 @@ class Controller:
         self.recover_each(
             existing, self.recover_repaired_failures, "targeted-repair",
         )
+        if self.qualification and any(
+            claim.get("status") == "blocked" and not self.role_active(claim)
+            for claim in existing
+        ):
+            self.latch_qualification_cohort_error()
         self.event(
             "controller_started", recovered_tickets=sorted(
                 item["ticket"] for item in existing
@@ -14517,8 +14857,10 @@ class Controller:
             candidates: list[dict[str, Any]],
             all_claims: list[dict[str, Any]],
         ) -> None:
-            if self.qualification and self.qualification_cohort_error.is_set():
-                return
+            if self.qualification_stopped():
+                candidates = [claim for claim in candidates if claim.get("receipt")]
+                if not candidates:
+                    return
             available = worker_limit - len(futures)
             reserved_live = sum(
                 not self.consumes_capacity(claim)
@@ -14751,7 +15093,7 @@ class Controller:
                     if (
                         pending
                         and now < wait_deadline
-                        and not self.qualification_cohort_error.is_set()
+                        and not self.qualification_stopped()
                     ):
                         time.sleep(max(0, min(
                             min(retry_after[claim["ticket"]] for claim in pending),

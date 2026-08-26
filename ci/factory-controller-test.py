@@ -5142,6 +5142,7 @@ class FactoryControllerTest(unittest.TestCase):
         cell = self.root / "cell-1"
         cell.mkdir()
         claim = {
+            "branch": "ticket/T-110",
             "lease": "a" * 64,
             "publication_lease": "",
             "schema": CONTROL.CLAIM_SCHEMA,
@@ -7234,8 +7235,15 @@ class FactoryControllerTest(unittest.TestCase):
 
     def test_invalid_reviewer_output_retries_only_reviewer(self) -> None:
         controller = CONTROL.Controller(self.args)
-        controller.qualification = {"tickets": ["T-110"]}
+        controller.qualification = {"generation": 1, "tickets": ["T-110"]}
+        controller.qualification_manifest_sha256 = "f" * 64
+        cell = self.root / "cell-1"
+        route = cell / "factory/route-plans/T-110.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        route_digest = hashlib.sha256(route.read_bytes()).hexdigest()
         claim = {
+            "branch": "ticket/T-110",
             "lease": "a" * 64,
             "publication_lease": "",
             "receipt": "b" * 64,
@@ -7249,9 +7257,18 @@ class FactoryControllerTest(unittest.TestCase):
             "run_id=invalid\n"
             "ticket=T-110\n"
             "role=reviewer\n"
+            "phase=completed\n"
             "accounting_state=abandoned_conservative\n"
+            "go_issued=1\n"
+            "task_submitted=1\n"
             "exit_status=11\n"
+            f"kit_sha={controller.release_path.name}\n"
+            f"route_plan_sha256={route_digest}\n"
             "role_exit=role_exit_invalid_output\n"
+            "role_branch_before=ticket/T-110\n"
+            f"role_head_before={'a' * 40}\n"
+            f"role_head_after={'a' * 40}\n"
+            f"role_remote_before={'a' * 40}\n"
             f"transition_receipt_sha256={'b' * 64}\n",
             encoding="utf-8",
         )
@@ -7259,17 +7276,234 @@ class FactoryControllerTest(unittest.TestCase):
         controller.passport = lambda *_args: calls.append("passport")
         controller.migrate_passport = lambda *_args: calls.append("migrate")
         controller.event = lambda name, *_args, **_kwargs: calls.append(name)
+        controller.transition_receipt = lambda *_args, **_kwargs: {
+            "consumed": True, "head_sha": "a" * 40,
+            "passport_sha256": None,
+            "receipt_sha256": claim["receipt"], "role": claim["role"],
+            "route_plan_sha256": route_digest, "stage": "RUN reviewer",
+        }
+        controller.remote_cell_head_status = lambda _claim: (
+            "pushed", "a" * 40, "a" * 40,
+        )
         self.assertTrue(controller.finish_pending_run(claim))
         self.assertEqual(claim["status"], "claimed")
         self.assertEqual(claim["receipt"], "")
         self.assertEqual(claim["role"], "")
         self.assertEqual(
             calls, [
-                "attempt_terminal", "passport", "migrate",
+                "attempt_terminal", "role_delivery_retry", "passport", "migrate",
                 "role_output_rejected",
             ]
         )
         self.assertFalse(controller.qualification_cohort_error.is_set())
+
+    def test_qualification_delivery_retry_is_exact_and_bounded(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"generation": 1, "tickets": ["T-110"]}
+        controller.qualification_manifest_sha256 = "f" * 64
+        cell = self.root / "retry-cell"
+        route = cell / "factory/route-plans/T-110.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        route_digest = hashlib.sha256(route.read_bytes()).hexdigest()
+        claim = {
+            "branch": "ticket/T-110", "receipt": "b" * 64,
+            "role": "builder", "ticket": "T-110", "worktree": str(cell),
+        }
+        first = {
+            "accounting_state": "completed", "go_issued": "1",
+            "kit_sha": controller.release_path.name, "phase": "completed",
+            "exit_status": "11",
+            "role_branch_before": "ticket/T-110",
+            "role_exit": "role_exit_dirty", "role_head_before": "a" * 40,
+            "role_head_after": "a" * 40,
+            "role_remote_before": "a" * 40,
+            "role": "builder", "route_plan_sha256": route_digest,
+            "run_id": "run-1", "transition_receipt_sha256": "b" * 64,
+            "task_submitted": "1", "ticket": "T-110",
+        }
+        controller.transition_receipt = lambda *_args, **_kwargs: {
+            "consumed": True, "head_sha": "a" * 40,
+            "passport_sha256": None,
+            "receipt_sha256": claim["receipt"], "role": claim["role"],
+            "route_plan_sha256": route_digest, "stage": "RUN builder",
+        }
+        controller.remote_cell_head_status = lambda _claim: (
+            "pushed", "a" * 40, "a" * 40,
+        )
+        controller.cell_git = lambda _claim, command, *_args: argparse.Namespace(
+            returncode=0,
+            stdout=(
+                claim["branch"] + "\n" if command == "symbolic-ref"
+                else "?? hidden-output" if command == "status" else ""
+            ),
+        )
+        self.assertEqual(
+            controller.qualification_delivery_retry(claim, first),
+            ("unavailable", ""),
+        )
+        controller.cell_git = lambda _claim, command, *_args: argparse.Namespace(
+            returncode=0,
+            stdout=claim["branch"] + "\n" if command == "symbolic-ref" else "",
+        )
+        self.assertEqual(
+            controller.qualification_delivery_retry(
+                claim, {**first, "task_submitted": "0"},
+            ),
+            ("unavailable", ""),
+        )
+        for malformed in (
+            {**first, "exit_status": "1"},
+            {**first, "role_head_after": "d" * 40},
+        ):
+            with self.subTest(malformed=malformed):
+                self.assertEqual(
+                    controller.qualification_delivery_retry(claim, malformed),
+                    ("unavailable", ""),
+                )
+        self.assertEqual(
+            controller.qualification_delivery_retry(claim, first),
+            ("retry", "run-1"),
+        )
+        controller.remote_cell_head_status = lambda _claim: (
+            "pushed", "d" * 40, "d" * 40,
+        )
+        self.assertEqual(
+            controller.qualification_delivery_retry(claim, first),
+            ("unavailable", ""),
+        )
+        controller.remote_cell_head_status = lambda _claim: (
+            "pushed", "a" * 40, "a" * 40,
+        )
+        self.assertEqual(
+            controller.qualification_delivery_retry(claim, first),
+            ("retry", "run-1"),
+        )
+        claim["receipt"] = "c" * 64
+        second = {
+            **first, "run_id": "run-2",
+            "transition_receipt_sha256": "c" * 64,
+        }
+        self.assertEqual(
+            controller.qualification_delivery_retry(claim, second),
+            ("exhausted", "run-1"),
+        )
+        retries = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path)["event"] == "role_delivery_retry"
+        ]
+        self.assertEqual(len(retries), 1)
+
+    def test_qualification_latch_blocks_new_claims_and_route_pins(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110", "T-111"]}
+        controller.qualification_cohort_error.set()
+        existing = [{"ticket": "T-110"}]
+        controller.qualification_cohort_accounted = lambda _claims: False
+        controller.json_call = lambda *_args, **_kwargs: self.fail(
+            "latched cohort attempted a new mutation"
+        )
+        self.assertEqual(controller.claim_new(existing), existing)
+        self.assertEqual(controller.pin_routes([{
+            "ticket": "T-111", "worktree": str(self.root / "cell-2"),
+        }]), [])
+        controller.qualification["mode"] = "successor"
+        controller.ensure_lease = lambda *_args: self.fail(
+            "latched cohort renewed a successor lease"
+        )
+        controller.maintain_successor_leases([{
+            "lease": "", "status": "claimed", "ticket": "T-111",
+        }])
+
+    def test_qualification_latch_linearizes_admission_mutations(self) -> None:
+        for target in (
+            "_claim_new", "_pin_routes", "_recover_missing_passport_claims",
+        ):
+            with self.subTest(target=target):
+                controller = CONTROL.Controller(self.args)
+                controller.qualification = {"tickets": ["T-110"]}
+                entered = threading.Event()
+                release = threading.Event()
+                order = []
+                mutation_calls = []
+
+                def mutate(*_args):
+                    mutation_calls.append(target)
+                    entered.set()
+                    self.assertTrue(release.wait(2))
+                    order.append("mutation")
+                    return []
+
+                setattr(controller, target, mutate)
+                call = {
+                    "_claim_new": lambda: controller.claim_new([]),
+                    "_pin_routes": lambda: controller.pin_routes([]),
+                    "_recover_missing_passport_claims": (
+                        lambda: controller.recover_missing_passport_claims([])
+                    ),
+                }[target]
+                mutation = threading.Thread(target=call)
+                mutation.start()
+                self.assertTrue(entered.wait(2))
+
+                def latch():
+                    controller.latch_qualification_cohort_error()
+                    order.append("latch")
+
+                failure = threading.Thread(target=latch)
+                failure.start()
+                self.assertTrue(controller.qualification_latch_pending.wait(2))
+                self.assertFalse(controller.qualification_cohort_error.is_set())
+                overtaking = threading.Thread(target=call)
+                overtaking.start()
+                overtaking.join(2)
+                self.assertFalse(overtaking.is_alive())
+                self.assertEqual(mutation_calls, [target])
+                release.set()
+                mutation.join(2)
+                failure.join(2)
+                self.assertFalse(mutation.is_alive())
+                self.assertFalse(failure.is_alive())
+                self.assertEqual(order, ["mutation", "latch"])
+
+    def test_qualification_latch_stops_sibling_recovery_mutations(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110", "T-111"]}
+        claims = [
+            {"status": "blocked", "ticket": ticket}
+            for ticket in controller.qualification["tickets"]
+        ]
+        controller.role_active = lambda _claim: False
+        controller.recovery_blocked = lambda *_args: False
+        controller.recovery_input_sha256 = lambda *_args: "a" * 64
+        calls = []
+
+        def recovery(items):
+            calls.append(items[0]["ticket"])
+            controller.latch_qualification_cohort_error()
+
+        controller.recover_each(
+            claims, recovery, "bounded-recovery", concurrent=True,
+        )
+
+        self.assertEqual(len(calls), 1)
+
+    def test_qualification_pending_latch_blocks_reconciliation_lease(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110"]}
+        controller.qualification_latch_pending.set()
+        controller.ensure_lease = lambda *_args: self.fail(
+            "pending latch allowed reconciliation lease mutation"
+        )
+
+        result = controller.reconcile_ticket({
+            "receipt": "", "ticket": "T-110",
+        })
+
+        self.assertEqual(result, {
+            "status": "waiting", "ticket": "T-110",
+            "wait_reason": "qualification-cohort-error",
+        })
 
     def test_contract_block_waits_for_exact_resume_then_reclaims(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -17952,6 +18186,7 @@ class FactoryControllerTest(unittest.TestCase):
         ])
         self.assertIn("T-112", controller.invalid_transition_tickets)
         self.assertIn("T-113", controller.prior_transition_tickets)
+        self.assertTrue(controller.qualification_cohort_error.is_set())
 
     def test_qualification_refreshes_terminal_after_controller_error(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -18405,6 +18640,443 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(calls, ["terminal-accounting", "finish"])
         self.assertEqual(parked, ["T-110"])
+
+    def test_qualification_latched_terminal_accounts_without_retry(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110"]}
+        claim = {
+            "branch": "ticket/T-110", "lease": "a" * 64,
+            "receipt": "b" * 64, "role": "builder", "status": "running",
+            "ticket": "T-110", "worktree": str(self.root / "cell-1"),
+        }
+        terminal = {
+            "accounting_state": "completed", "exit_status": "11",
+            "go_issued": "1", "role_exit": "role_exit_dirty",
+            "run_id": "run-1", "task_submitted": "1",
+        }
+        controller.role_active = lambda _claim: False
+        controller.terminal_for_receipt = lambda *_args: terminal
+        controller.emit_attempt_terminal = lambda *_args: None
+        controller.cell_git = lambda *_args: argparse.Namespace(
+            returncode=0, stderr="", stdout=" M app/output",
+        )
+        controller.quarantine_dirty_role_output = lambda *_args: None
+        controller.qualification_delivery_retry = lambda *_args: self.fail(
+            "latched terminal authorized another delivery retry"
+        )
+        controller.terminal_already_exported = lambda *_args: True
+        accounting = []
+        controller.migrate_passport = lambda *_args: accounting.append("passport")
+        controller.archive_emergency_admission = lambda *_args: None
+        controller.save_claim = lambda *_args: accounting.append("claim")
+        controller.release_ticket_lease = lambda *_args: accounting.append("lease")
+        controller.passport_sha256 = lambda *_args: "d" * 64
+        events = []
+        controller.event = lambda name, *_args, **_kwargs: events.append(name)
+        started = threading.Event()
+
+        def finish():
+            started.set()
+            return controller.finish_pending_run(claim)
+
+        controller.qualification_launch_lock.acquire()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            settlement = executor.submit(finish)
+            self.assertTrue(started.wait(1))
+            latch = executor.submit(controller.latch_qualification_cohort_error)
+            pending = controller.qualification_latch_pending.wait(1)
+            controller.qualification_launch_lock.release()
+            self.assertTrue(pending)
+            self.assertFalse(settlement.result(timeout=2))
+            latch.result(timeout=2)
+
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(claim["receipt"], "b" * 64)
+        self.assertEqual(accounting, ["passport", "claim", "lease"])
+        self.assertEqual(events, ["terminal_export_recovered", "role_blocked"])
+
+    def test_qualification_latched_provider_failure_does_not_fallback(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110"]}
+        claim = {
+            "branch": "ticket/T-110", "lease": "a" * 64,
+            "receipt": "b" * 64, "role": "builder", "status": "running",
+            "ticket": "T-110", "worktree": str(self.root / "cell-1"),
+        }
+        terminal = {
+            "accounting_state": "completed", "exit_status": "1",
+            "go_issued": "1", "role_exit": "provider_failed",
+            "route_id": "cursor-anthropic", "run_id": "run-1",
+            "task_submitted": "1", "terminal_reason_code": "provider_unavailable",
+        }
+        controller.role_active = lambda _claim: False
+        controller.terminal_for_receipt = lambda *_args: terminal
+        controller.emit_attempt_terminal = lambda *_args: None
+        controller.direct_model_identity_candidate = lambda *_args: self.fail(
+            "latched terminal attempted direct provider recovery"
+        )
+        controller.json_call = lambda *_args, **_kwargs: self.fail(
+            "latched terminal attempted provider fallback"
+        )
+        controller.cell_git = lambda *_args: argparse.Namespace(
+            returncode=0, stderr="", stdout="",
+        )
+        controller.terminal_already_exported = lambda *_args: True
+        accounting = []
+        controller.migrate_passport = lambda *_args: accounting.append("passport")
+        controller.archive_emergency_admission = lambda *_args: None
+        controller.save_claim = lambda *_args: accounting.append("claim")
+        controller.release_ticket_lease = lambda *_args: accounting.append("lease")
+        controller.passport_sha256 = lambda *_args: "d" * 64
+        controller.event = lambda *_args, **_kwargs: None
+        started = threading.Event()
+
+        def finish():
+            started.set()
+            return controller.finish_pending_run(claim)
+
+        controller.qualification_launch_lock.acquire()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            settlement = executor.submit(finish)
+            self.assertTrue(started.wait(1))
+            latch = executor.submit(controller.latch_qualification_cohort_error)
+            pending = controller.qualification_latch_pending.wait(1)
+            controller.qualification_launch_lock.release()
+            self.assertTrue(pending)
+            self.assertFalse(settlement.result(timeout=2))
+            latch.result(timeout=2)
+
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(claim["receipt"], "b" * 64)
+        self.assertEqual(accounting, ["passport", "claim", "lease"])
+
+    def test_qualification_latched_missing_terminal_preserves_receipt(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110"]}
+        claim = {
+            "lease": "a" * 64, "receipt": "b" * 64, "role": "builder",
+            "status": "running", "ticket": "T-110",
+        }
+        controller.role_active = lambda _claim: False
+        controller.terminal_for_receipt = lambda *_args: None
+        cleanup = []
+        controller.save_claim = lambda *_args: cleanup.append("claim")
+        controller.release_ticket_lease = lambda *_args: cleanup.append("lease")
+        started = threading.Event()
+
+        def finish():
+            started.set()
+            return controller.finish_pending_run(claim)
+
+        controller.qualification_launch_lock.acquire()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            settlement = executor.submit(finish)
+            self.assertTrue(started.wait(1))
+            latch = executor.submit(controller.latch_qualification_cohort_error)
+            pending = controller.qualification_latch_pending.wait(1)
+            controller.qualification_launch_lock.release()
+            self.assertTrue(pending)
+            self.assertFalse(settlement.result(timeout=2))
+            latch.result(timeout=2)
+
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(claim["blocked_reason"], "missing-terminal")
+        self.assertEqual(claim["receipt"], "b" * 64)
+        self.assertEqual(claim["role"], "builder")
+        self.assertEqual(cleanup, ["claim", "lease"])
+
+    def test_qualification_latched_prior_launch_void_does_not_reopen(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"tickets": ["T-110"]}
+        claim = {
+            "lease": "a" * 64, "receipt": "b" * 64, "role": "builder",
+            "status": "running", "ticket": "T-110",
+        }
+        terminal = {
+            "accounting_state": "launch_void", "kit_sha": "c" * 40,
+            "run_id": "run-1", "terminal_reason_code": "provider_preflight",
+        }
+        controller.role_active = lambda _claim: False
+        controller.terminal_for_receipt = lambda *_args: terminal
+        controller.emit_attempt_terminal = lambda *_args: None
+        controller.typed_launch_void = lambda *_args: self.fail(
+            "latched launch-void attempted release-upgrade recovery"
+        )
+        cleanup = []
+        controller.save_claim = lambda *_args: cleanup.append("claim")
+        controller.release_ticket_lease = lambda *_args: cleanup.append("lease")
+        events = []
+        controller.event = lambda name, *_args, **_kwargs: events.append(name)
+        started = threading.Event()
+
+        def finish():
+            started.set()
+            return controller.finish_pending_run(claim)
+
+        controller.qualification_launch_lock.acquire()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            settlement = executor.submit(finish)
+            self.assertTrue(started.wait(1))
+            latch = executor.submit(controller.latch_qualification_cohort_error)
+            pending = controller.qualification_latch_pending.wait(1)
+            controller.qualification_launch_lock.release()
+            self.assertTrue(pending)
+            self.assertFalse(settlement.result(timeout=2))
+            latch.result(timeout=2)
+
+        self.assertEqual(claim["status"], "blocked")
+        self.assertEqual(claim["blocked_reason"], "pre-go-failure")
+        self.assertEqual(claim["receipt"], "b" * 64)
+        self.assertEqual(claim["role"], "builder")
+        self.assertEqual(cleanup, ["claim", "lease"])
+        self.assertEqual(events, ["pre_go_failure_blocked"])
+
+    def test_qualification_restart_rebuilds_retry_exhaustion_before_siblings(
+        self,
+    ) -> None:
+        self.args.wait_seconds = 30
+        controller, claims = self.scheduler_fixture("T-110", "T-111", "T-112")
+        failed = claims[0]
+        failed.update(
+            receipt="c" * 64, role="builder", status="running",
+        )
+        input_head = "a" * 40
+        first_receipt = "b" * 64
+        second_receipt = failed["receipt"]
+        route = controller.route_path(failed)
+        route_digest = hashlib.sha256(route.read_bytes()).hexdigest()
+        CONTROL.Controller.event(
+            controller, "role_delivery_retry", failed["ticket"],
+            input_head=input_head, role="builder", role_exit="role_exit_dirty",
+            run_id="run-1", transition_receipt_sha256=first_receipt,
+        )
+        self.operator_passport(
+            failed["ticket"], "Building", "none",
+            transition_receipt_sha256=second_receipt, head_sha=input_head,
+        )
+        passport_path = self.state / f"passports/{failed['ticket']}.json"
+        passport = CONTROL.read(passport_path)
+        passport = {
+            key: value for key, value in passport.items()
+            if key not in {"authentication_sha256", "passport_sha256"}
+        }
+        passport["charge_records"] = [{
+            "role": "builder", "run_id": "run-2",
+            "transition_receipt_sha256": second_receipt,
+        }]
+        passport = PASSPORT.authenticate(
+            passport, (self.state / "passport.key").read_bytes(),
+        )
+        PASSPORT.write_atomic(passport_path, passport)
+        terminal = {
+            "accounting_state": "completed", "exit_status": "11",
+            "go_issued": "1", "kit_sha": controller.release_path.name,
+            "phase": "completed", "role": "builder",
+            "role_branch_before": failed["branch"],
+            "role_exit": "role_exit_dirty", "role_head_after": input_head,
+            "role_head_before": input_head, "role_remote_before": input_head,
+            "route_plan_sha256": route_digest, "run_id": "run-2",
+            "task_submitted": "1", "ticket": failed["ticket"],
+            "transition_receipt_sha256": second_receipt,
+        }
+
+        self.args.wait_seconds = 0
+        restarted = CONTROL.Controller(self.args)
+        restarted.load_claims = lambda: claims
+        restarted.role_active = lambda _claim: False
+        restarted.terminal_for_receipt = lambda *_args: terminal
+        restarted.transition_receipt = lambda *_args, **_kwargs: {
+            "consumed": True, "head_sha": input_head,
+            "passport_sha256": None, "receipt_sha256": second_receipt,
+            "role": "builder", "route_plan_sha256": route_digest,
+            "stage": "RUN builder",
+        }
+        dirty = True
+        restarted.cell_git = lambda claim, command, *_args: argparse.Namespace(
+            returncode=0,
+            stdout=(
+                claim["branch"] + "\n" if command == "symbolic-ref"
+                else " M app/output" if command == "status" and dirty else ""
+            ),
+        )
+        restarted.remote_cell_head_status = lambda _claim: (
+            "pushed", input_head, input_head,
+        )
+        restarted.qualification_admission_preflight = lambda _claims: self.fail(
+            "latched restart performed admission preflight"
+        )
+        restarted.cancellation_authority = lambda _claims: None
+        restarted.retire_canceled_claims = lambda current, *_args: current
+        restarted.quarantine_invalid_transition_claims = lambda _claims: None
+        restarted.reclaim_orphaned_execution_cells = lambda _claims: None
+        restarted.release_inactive_ticket_leases = lambda _claims: None
+        restarted.record_qualification_done_targets = lambda: None
+        restarted.recover_missing_passport_claims = lambda _claims: None
+        restarted.product_ticket_done = lambda _ticket: False
+        restarted.protected_main_head = lambda: "f" * 40
+        restarted.mark_reconciling = lambda _claim, **_kwargs: None
+        restarted.ensure_lease = lambda *_args: None
+        quarantines = []
+
+        def quarantine(*_args):
+            nonlocal dirty
+            dirty = False
+            quarantines.append("run-2")
+
+        restarted.quarantine_dirty_role_output = quarantine
+        migrations = []
+        restarted.migrate_passport = lambda claim, _publication: (
+            migrations.append(claim["ticket"])
+        )
+        restarted.archive_emergency_admission = lambda *_args: None
+        restarted.release_ticket_lease = lambda claim: claim.update(
+            lease_released=True,
+        )
+        restarted.save_claim = lambda _claim: None
+        restarted.passport = lambda *_args: self.fail(
+            "already-exported second charge was exported again"
+        )
+        restarted.park_claim = lambda _claim: True
+        restarted.settle_recovery_attempt = lambda _claim: False
+        restarted.run_role = lambda *_args, **_kwargs: self.fail(
+            "a third role attempt was launched"
+        )
+        calls = []
+        original_reconcile = restarted.reconcile_ticket_until_wait
+
+        def reconcile(claim):
+            calls.append(claim["ticket"])
+            self.assertTrue(restarted.qualification_cohort_error.is_set())
+            return original_reconcile(claim)
+
+        restarted.reconcile_ticket_until_wait = reconcile
+        result = restarted.reconcile()
+
+        self.assertTrue(restarted.qualification_cohort_error.is_set())
+        self.assertEqual(quarantines, ["run-2"])
+        self.assertEqual(calls, ["T-110"])
+        self.assertEqual(result["results"], [{
+            "status": "blocked", "ticket": "T-110",
+        }])
+        passport = CONTROL.read(passport_path)
+        self.assertEqual(len(passport["charge_records"]), 1)
+        self.assertEqual(migrations, ["T-110"])
+        events = [CONTROL.read(path) for path in restarted.events.glob("*.json")]
+        self.assertEqual(sum(
+            event["event"] == "role_delivery_retry" for event in events
+        ), 1)
+        self.assertEqual(sum(
+            event["event"] == "attempt_terminal"
+            and event.get("run_id") == "run-2" for event in events
+        ), 1)
+        self.assertEqual(sum(
+            event["event"] == "role_blocked"
+            and event.get("delivery_retry_exhausted") is True
+            for event in events
+        ), 1)
+
+    def test_qualification_restart_quarantines_before_first_retry(self) -> None:
+        self.args.wait_seconds = 30
+        controller, claims = self.scheduler_fixture("T-110")
+        claim = claims[0]
+        claim.update(receipt="b" * 64, role="builder", status="running")
+        input_head = "a" * 40
+        route_digest = hashlib.sha256(
+            controller.route_path(claim).read_bytes()
+        ).hexdigest()
+        terminal = {
+            "accounting_state": "completed", "exit_status": "11",
+            "go_issued": "1", "kit_sha": controller.release_path.name,
+            "phase": "completed", "role": "builder",
+            "role_branch_before": claim["branch"],
+            "role_exit": "role_exit_dirty", "role_head_after": input_head,
+            "role_head_before": input_head, "role_remote_before": input_head,
+            "route_plan_sha256": route_digest, "run_id": "run-1",
+            "task_submitted": "1", "ticket": claim["ticket"],
+            "transition_receipt_sha256": claim["receipt"],
+        }
+        dirty = True
+        quarantines = []
+        controller.role_active = lambda _claim: False
+        controller.terminal_for_receipt = lambda *_args: terminal
+        controller.transition_receipt = lambda *_args, **_kwargs: {
+            "consumed": True, "head_sha": input_head,
+            "passport_sha256": None, "receipt_sha256": claim["receipt"],
+            "role": "builder", "route_plan_sha256": route_digest,
+            "stage": "RUN builder",
+        }
+        controller.cell_git = lambda item, command, *_args: argparse.Namespace(
+            returncode=0,
+            stdout=(
+                item["branch"] + "\n" if command == "symbolic-ref"
+                else " M app/output" if command == "status" and dirty else ""
+            ),
+        )
+        controller.remote_cell_head_status = lambda _claim: (
+            "pushed", input_head, input_head,
+        )
+
+        def quarantine(*_args):
+            nonlocal dirty
+            dirty = False
+            quarantines.append("run-1")
+
+        controller.quarantine_dirty_role_output = quarantine
+        controller.event = CONTROL.Controller.event.__get__(
+            controller, CONTROL.Controller,
+        )
+        controller.release_inactive_ticket_leases = lambda _claims: None
+        controller.reconcile_ticket_until_wait = lambda item: {
+            "status": "waiting", "ticket": item["ticket"],
+        }
+
+        controller.reconcile()
+
+        retries = [
+            CONTROL.read(path) for path in controller.events.glob("*.json")
+            if CONTROL.read(path)["event"] == "role_delivery_retry"
+        ]
+        self.assertFalse(controller.qualification_stopped())
+        self.assertEqual(quarantines, ["run-1"])
+        self.assertEqual(len(retries), 1)
+        self.assertEqual(retries[0]["run_id"], "run-1")
+
+    def test_qualification_restart_does_not_authorize_retry_after_latch(
+        self,
+    ) -> None:
+        self.args.wait_seconds = 30
+        controller, claims = self.scheduler_fixture("T-110", "T-111")
+        for number, claim in enumerate(claims, 1):
+            claim.update(
+                receipt=f"{number + 10:064x}", role="builder", status="running",
+            )
+        controller.role_active = lambda _claim: False
+        controller.terminal_for_receipt = lambda ticket, receipt: {
+            "role_exit": "role_exit_dirty", "run_id": f"run-{ticket}",
+            "transition_receipt_sha256": receipt,
+        }
+        controller.cell_git = lambda claim, command, *_args: argparse.Namespace(
+            returncode=0,
+            stdout=" M unsafe-output" if (
+                command == "status" and claim["ticket"] == "T-110"
+            ) else "",
+        )
+        controller.quarantine_dirty_role_output = lambda *_args: (
+            (_ for _ in ()).throw(CONTROL.ControllerError("unsafe output"))
+        )
+        retry_calls = []
+        controller.qualification_delivery_retry = lambda claim, _terminal: (
+            retry_calls.append(claim["ticket"]) or ("retry", "run")
+        )
+        controller.release_inactive_ticket_leases = lambda _claims: None
+        controller.reconcile_ticket_until_wait = lambda claim: {
+            "status": "blocked", "ticket": claim["ticket"],
+        }
+
+        controller.reconcile()
+
+        self.assertTrue(controller.qualification_stopped())
+        self.assertEqual(retry_calls, [])
 
     def test_qualification_spend_limit_falls_back_without_latching(
         self,

@@ -6,6 +6,20 @@ import json
 import pathlib
 import re
 
+MAX_REVIEW_BYTES = 131_072
+CODEX_EVENT_TYPES = frozenset({
+    "error", "item.completed", "item.started", "item.updated", "thread.started",
+    "turn.completed", "turn.failed", "turn.started",
+})
+CODEX_ITEM_TYPES = frozenset({
+    "agent_message", "collab_tool_call", "command_execution", "error",
+    "file_change", "mcp_tool_call", "reasoning", "todo_list", "web_search",
+})
+CODEX_METRICS = re.compile(
+    r"^turns=1(?: cost_usd=(?:0|[1-9][0-9]{0,6})(?:[.][0-9]{1,18})?)?$"
+)
+SAFE_CODEX_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
 CALLBACK_OWNER = re.compile(
     r"^(?P<indent>\s*)(?P<wrapper>`|\*\*|)FIX-OWNER:\s*"
     r"(?P<owner>builder|test-author|both)(?P=wrapper)"
@@ -272,12 +286,148 @@ def claude_review(raw: str) -> str:
     return results[0]
 
 
+def codex_review(raw: str, contract_version: str) -> str:
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("Codex reviewer stream contains duplicate JSON fields")
+            value[key] = item
+        return value
+
+    messages = []
+    event_types = []
+    pre_event_json = False
+    thread_started = False
+    turn_started = False
+    turn_completed = False
+    metrics_seen = False
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        event_looking = stripped.startswith("{") and re.search(
+            r'"type"\s*:', stripped,
+        ) is not None
+        try:
+            event = json.loads(stripped, object_pairs_hook=unique_object)
+        except json.JSONDecodeError as error:
+            if (
+                turn_completed and not metrics_seen
+                and CODEX_METRICS.fullmatch(stripped)
+            ):
+                metrics_seen = True
+                continue
+            if event_looking or event_types:
+                raise ValueError(
+                    "Codex reviewer stream contains malformed JSON"
+                ) from error
+            if stripped.startswith("{"):
+                pre_event_json = True
+            continue
+        except ValueError:
+            if event_looking or event_types:
+                raise
+            if stripped.startswith("{"):
+                pre_event_json = True
+            continue
+        event_type = event.get("type") if isinstance(event, dict) else None
+        if not isinstance(event_type, str) or event_type not in CODEX_EVENT_TYPES:
+            if (
+                event_types
+                or isinstance(event, dict) and "type" in event
+                or verdict_signals(stripped)
+            ):
+                raise ValueError("Codex reviewer stream contains an unknown event")
+            pre_event_json = True
+            continue
+        if pre_event_json:
+            raise ValueError("Codex reviewer stream contains a JSON preamble")
+        if metrics_seen or turn_completed:
+            raise ValueError("Codex reviewer stream continues after completion")
+        if event_type == "thread.started":
+            thread_id = event.get("thread_id")
+            if (
+                event_types
+                or not isinstance(thread_id, str)
+                or not SAFE_CODEX_ID.fullmatch(thread_id)
+            ):
+                raise ValueError("Codex reviewer thread lifecycle is malformed")
+            thread_started = True
+        elif event_type == "turn.started":
+            if not thread_started or turn_started or len(event_types) != 1:
+                raise ValueError("Codex reviewer turn lifecycle is malformed")
+            turn_started = True
+        elif event_type in {"item.completed", "item.started", "item.updated"}:
+            if not thread_started or not turn_started:
+                raise ValueError("Codex reviewer item precedes its turn")
+        elif event_type == "turn.completed":
+            if not thread_started or not turn_started:
+                raise ValueError("Codex reviewer completion precedes its turn")
+            turn_completed = True
+        event_types.append(event_type)
+        if event_type in {"error", "turn.failed"}:
+            raise ValueError("Codex reviewer turn did not complete successfully")
+        if event_type == "turn.completed":
+            usage = event.get("usage")
+            if (
+                not isinstance(usage, dict)
+                or any(
+                    not isinstance(usage.get(key), int)
+                    or isinstance(usage.get(key), bool)
+                    or usage[key] < 0
+                    for key in ("input_tokens", "output_tokens")
+                )
+            ):
+                raise ValueError("Codex reviewer completion usage is malformed")
+            continue
+        if event_type not in {"item.completed", "item.started", "item.updated"}:
+            continue
+        item = event.get("item")
+        if not isinstance(item, dict):
+            raise ValueError("Codex reviewer stream contains a malformed item")
+        if (
+            not isinstance(item.get("id"), str)
+            or not SAFE_CODEX_ID.fullmatch(item["id"])
+            or not isinstance(item.get("type"), str)
+            or item["type"] not in CODEX_ITEM_TYPES
+        ):
+            raise ValueError("Codex reviewer stream contains malformed item identity")
+        if event_type != "item.completed" or item["type"] != "agent_message":
+            continue
+        text = item.get("text")
+        if not isinstance(text, str):
+            raise ValueError("Codex reviewer stream contains malformed agent text")
+        messages.append(normalize_cursor_callback(text))
+    if not event_types:
+        return raw
+    if (
+        event_types.count("thread.started") != 1
+        or event_types.count("turn.started") != 1
+        or event_types.count("turn.completed") != 1
+        or event_types[-1] != "turn.completed"
+    ):
+        raise ValueError("Codex reviewer stream must end in one successful turn")
+    verdict_messages = [message for message in messages if verdict_signals(message)]
+    if not messages or len(verdict_messages) != 1 or messages[-1] != verdict_messages[0]:
+        raise ValueError(
+            "Codex reviewer stream must end in exactly one verdict-bearing agent message"
+        )
+    review = messages[-1]
+    if not review or "\x00" in review or len(review.encode("utf-8")) > MAX_REVIEW_BYTES:
+        raise ValueError("Codex reviewer detail is empty or exceeds the safe bound")
+    parse_review(review, contract_version)
+    return review.strip()
+
+
 def review_text(raw: str, adapter: str, contract_version: str) -> str:
     """Return the adapter-normalized, verdict-bearing review text."""
     if adapter.startswith("cursor-"):
         return cursor_review(raw, contract_version)
     if adapter == "claude-code":
         return claude_review(raw)
+    if adapter == "codex":
+        return codex_review(raw, contract_version)
     return raw
 
 
