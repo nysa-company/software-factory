@@ -23,7 +23,8 @@ the Anthropic family.
 
 The route catalog currently enables two families:
 
-- OpenAI through native Codex CLI or Cursor CLI.
+- OpenAI through native Codex CLI (`gpt-5.6-sol`, `gpt-5.6-terra`, and
+  `gpt-5.6-luna`) or Cursor CLI.
 - Anthropic through native Claude CLI or Cursor CLI.
 
 Kimi K2.6 is a disabled experimental Moonshot-family route through Claude CLI
