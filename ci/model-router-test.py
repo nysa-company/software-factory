@@ -63,6 +63,7 @@ class ModelRouterTest(unittest.TestCase):
             {
                 "codex-gpt-5.6-sol",
                 "codex-gpt-5.6-terra",
+                "codex-gpt-5.6-luna",
                 "claude-fable",
                 "claude-sonnet",
                 "cursor-gpt-5.6-sol-high",
@@ -81,6 +82,9 @@ class ModelRouterTest(unittest.TestCase):
         self.assertEqual(kimi["selection_id"], "moonshotai/kimi-k2.6")
         self.assertFalse(kimi["enabled"])
         self.assertEqual(kimi["lifecycle"], "experimental")
+        luna = self.routes["codex-gpt-5.6-luna"]
+        self.assertEqual(luna["adapter"], "codex")
+        self.assertEqual(luna["selection_id"], "gpt-5.6-luna")
         self.assertEqual(
             self.routes["cursor-gpt-5.6-sol-high"]["expected_reported_identity"],
             "GPT-5.6 Sol 1M High",
