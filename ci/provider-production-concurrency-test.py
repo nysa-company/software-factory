@@ -818,8 +818,10 @@ done
     @unittest.skipUnless(sys.platform == "darwin", "macOS zsh login-shell regression")
     def test_login_shell_preserves_certified_task_runtime_and_refuses_drift(self) -> None:
         pinned = self.root / "node-22/bin"
+        guard = self.root / "planner-guard"
         homebrew = self.root / "homebrew/bin"
         pinned.mkdir(parents=True)
+        guard.mkdir()
         homebrew.mkdir(parents=True)
         for directory, node, npm in (
             (pinned, "v22.22.0", "10.9.4"),
@@ -830,7 +832,14 @@ done
                 path.write_text(f"#!/bin/sh\nprintf '%s\\n' '{version}'\n")
                 path.chmod(0o755)
 
-        task_path = f"{pinned}:{homebrew}:/usr/bin:/bin:/usr/sbin:/sbin"
+        guarded_npm = guard / "npm"
+        guarded_npm.write_text(
+            "#!/bin/sh\nprintf '%s\\n' 'Planner package command refused' >&2\nexit 126\n"
+        )
+        guarded_npm.chmod(0o755)
+
+        runtime_path = f"{pinned}:{homebrew}:/usr/bin:/bin:/usr/sbin:/sbin"
+        task_path = f"{guard}:{runtime_path}"
         launcher = (ROOT / "scripts/factory-launch").read_text()
         self.assertIn(
             '"FACTORY_CERTIFIED_NODE_VERSION=$ACTIVE_RUNTIME_NODE"', launcher
@@ -860,6 +869,7 @@ CLI_CLAUDE_CONFIG_DIR=
 CLI_CLAUDE_SETTINGS=
 FACTORY_CERTIFIED_NODE_VERSION=v22.22.0
 FACTORY_CERTIFIED_NPM_VERSION=10.9.4
+TASK_RUNTIME_PATH='{runtime_path}'
 TASK_PATH='{task_path}'
 TERMINAL_REASON_CODE=
 prepare_cli_runtime
@@ -881,14 +891,21 @@ printf '%s\\n' "$CLI_PROVIDER_HOME"
             "SHELL": "/bin/zsh",
             "USER": os.environ.get("USER", "factory"),
         }
-        command = 'node --version; npm --version; : > "$MARKER"'
+        command = 'git --version >/dev/null; node --version; : > "$MARKER"'
         ready = subprocess.run(
             ["/bin/zsh", "-lc", command], env=environment, text=True,
             capture_output=True, check=False, timeout=30,
         )
         self.assertEqual(ready.returncode, 0, ready.stderr)
-        self.assertEqual(ready.stdout.splitlines(), ["v22.22.0", "10.9.4"])
+        self.assertEqual(ready.stdout.splitlines(), ["v22.22.0"])
         self.assertTrue(marker.is_file())
+
+        guarded = subprocess.run(
+            ["/bin/zsh", "-lc", "npm --version"], env=environment, text=True,
+            capture_output=True, check=False, timeout=30,
+        )
+        self.assertEqual(guarded.returncode, 126)
+        self.assertIn("Planner package command refused", guarded.stderr)
 
         for tool, expected, drifted in (
             ("node", "v22.22.0", "v22.22.1"),

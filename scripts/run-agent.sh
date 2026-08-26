@@ -1885,11 +1885,13 @@ prepare_cli_runtime() {
 }
 
 prepare_cli_login_shell() {
+  local runtime_path="${TASK_RUNTIME_PATH:-}"
   [[ "$CLI_CONCURRENT_RUN" -eq 1 ]] || return 0
   [[ -n "${FACTORY_CERTIFIED_NODE_VERSION:-}${FACTORY_CERTIFIED_NPM_VERSION:-}" ]] ||
     return 0
   [[ "${FACTORY_CERTIFIED_NODE_VERSION:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ &&
      "${FACTORY_CERTIFIED_NPM_VERSION:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ &&
+     "$runtime_path" == /* && "$runtime_path" != *$'\n'* && "$runtime_path" != *$'\r'* &&
      "$TASK_PATH" == /* && "$TASK_PATH" != *$'\n'* && "$TASK_PATH" != *$'\r'* ]] || {
     TERMINAL_REASON_CODE="provider_task_runtime_invalid"
     echo "certified provider task runtime is invalid" >&2
@@ -1903,8 +1905,9 @@ prepare_cli_login_shell() {
   }
   {
     printf 'export PATH=%q\n' "$TASK_PATH"
-    printf 'if [[ "$(node --version 2>/dev/null)" != %q || "$(npm --version 2>/dev/null)" != %q ]]; then\n' \
-      "$FACTORY_CERTIFIED_NODE_VERSION" "$FACTORY_CERTIFIED_NPM_VERSION"
+    printf 'if [[ "$(PATH=%q node --version 2>/dev/null)" != %q || "$(PATH=%q npm --version 2>/dev/null)" != %q ]]; then\n' \
+      "$runtime_path" "$FACTORY_CERTIFIED_NODE_VERSION" \
+      "$runtime_path" "$FACTORY_CERTIFIED_NPM_VERSION"
     printf "  print -u2 -- 'Factory product runtime mismatch; command refused'\n"
     printf '  exit 126\nfi\n'
   } >"$profile" || return 1
@@ -3089,7 +3092,8 @@ CLI_PROVIDER_TMPDIR="${TMPDIR:-/tmp}"
 if [[ "$CLI_CONCURRENT_RUN" -eq 1 ]]; then
   prepare_cli_runtime || exit 6
 fi
-TASK_PATH="$PATH"
+TASK_RUNTIME_PATH="$PATH"
+TASK_PATH="$TASK_RUNTIME_PATH"
 if [[ "$ROLE" == "planner" ]]; then
   ROLE_GUARD_ROOT="$(mktemp -d "$CLI_PROVIDER_TMPDIR/factory-planner-policy.XXXXXX")" ||
     exit 125
@@ -3097,7 +3101,7 @@ if [[ "$ROLE" == "planner" ]]; then
     ln -s "$KIT_DIR/scripts/lib/role-command-guard.sh" "$ROLE_GUARD_ROOT/$command" ||
       exit 125
   done
-  TASK_PATH="$ROLE_GUARD_ROOT:$PATH"
+  TASK_PATH="$ROLE_GUARD_ROOT:$TASK_RUNTIME_PATH"
 fi
 prepare_cli_login_shell || exit 6
 TASK_COMMAND=()
