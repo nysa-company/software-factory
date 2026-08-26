@@ -18337,6 +18337,9 @@ class FactoryControllerTest(unittest.TestCase):
             controller.qualification_cohort_error.is_set()
         )
         controller.archive_emergency_admission = lambda *_args: None
+        controller.cell_git = lambda *_args: argparse.Namespace(
+            returncode=0, stderr="", stdout="",
+        )
         controller.save_claim = lambda *_args: None
         controller.release_ticket_lease = lambda *_args: None
         controller.passport_sha256 = lambda *_args: "d" * 64
