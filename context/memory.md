@@ -8338,3 +8338,15 @@ the authenticated input tree. Replay accepts only the bound input, output, or
 diagnostic partial-restoration states; Reviewer mutation, route-plan dirt,
 unsafe content, ambiguous staging, or remote drift remains fail-closed without
 rewriting the worktree.
+
+## 2026-08-26 — Decision 616: Unchanged provider contracts use receipt-only endorsement
+
+Category: Reliability
+
+A sealed successor whose exact provider contract matches the current receipt
+authority may be added monotonically to that receipt's compatible-release
+allowlist without stopping products or changing provider links/configuration.
+The approval binds the source receipt, active-project snapshot, exact contract
+fingerprint, target release, and current links/configuration. Any drift refuses
+and requires the ordinary fully drained maintenance transaction; replay is
+byte-stable.

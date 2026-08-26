@@ -930,7 +930,14 @@ minutes.
 3. Inventory every nonterminal ticket and its committed `Kit-SHA`. Finish it
    on its current release or prepare the applicable exact protected-main
    migration evidence. Do not migrate its pin or route journal yet.
-4. For an active execution computer, run `factory-kit.sh pause`. It publishes
+4. Before publishing maintenance, try the sealed candidate's
+   `provider-cli-pin endorse-plan`. If it succeeds, review and apply that exact
+   hash, require `provider-cli-pin check --sha <candidate>` to report ready,
+   and do not stop unrelated products for provider pinning. If endorsement
+   refuses, the provider contract changed: put every active product in
+   maintenance and fully drain provider work before using the ordinary pin
+   transaction. For the product being upgraded on an active execution
+   computer, run `factory-kit.sh pause`. It publishes
    managed maintenance before checking the drain. If it refuses on a stale
    lease, leave maintenance published, prove no role run is active, run
    `factory-kit.sh recover-lease` once for each named ticket, and retry
@@ -952,9 +959,10 @@ minutes.
 6. On the computer that will execute factory roles, verify the configured
    `CODEX_PINNED`, `CLAUDE_CODE_PINNED`, and `CURSOR_AGENT_VERSION` values,
    controlled physical CLI paths, and `scripts/adapters/contract-test.sh
-   --routes`. While maintenance and the complete drain from step 4 remain in
-   force, run the candidate's `provider-cli-pin plan`, review its exact
-   SHA/tree allowlist and physical targets, apply only that approval hash, and
+   --routes`. Recheck the endorsement applied in step 4. If endorsement
+   refused, while maintenance and the complete drain from step 4 remain in
+   force, run the candidate's `provider-cli-pin plan`, review its exact SHA/tree
+   allowlist and physical targets, apply only that approval hash, and
    require `provider-cli-pin check --sha <candidate>` to report ready. This
    pin transaction precedes certification; certification and activation both
    reject an absent, stale, or unlisted receipt. Update and verify the Nysa

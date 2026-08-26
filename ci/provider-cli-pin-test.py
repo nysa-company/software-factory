@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -67,6 +68,23 @@ class ProviderCliPinTest(unittest.TestCase):
         }))
         manifest.chmod(0o600)
 
+    def release_tree(self, release: Path) -> str:
+        git_dir = self.home / f"tree-{release.name}.git"
+        index = self.home / f"tree-{release.name}.index"
+        subprocess.run(
+            ["git", "init", "--bare", str(git_dir)], check=True,
+            capture_output=True,
+        )
+        environment = {**os.environ, "GIT_INDEX_FILE": str(index)}
+        subprocess.run(
+            ["git", f"--git-dir={git_dir}", f"--work-tree={release}", "add", "-A"],
+            check=True, capture_output=True, env=environment,
+        )
+        return subprocess.run(
+            ["git", f"--git-dir={git_dir}", "write-tree"], check=True,
+            capture_output=True, text=True, env=environment,
+        ).stdout.strip()
+
     @staticmethod
     def seal(release: Path) -> None:
         for path in (release, *release.rglob("*")):
@@ -89,6 +107,7 @@ class ProviderCliPinTest(unittest.TestCase):
             "scripts/adapters/codex.sh",
             "scripts/adapters/cursor-agent.sh",
             "scripts/owner-provider-cli-pin.py",
+            "scripts/owner-provider-cli-pin-endorsement.py",
         )
         for relative in paths:
             target = release / relative
@@ -169,6 +188,22 @@ exit 2
     def apply(self, root: Path | None = None, env=None) -> subprocess.CompletedProcess[str]:
         plan = self.plan(root)
         return self.command("apply", root=root, approval=plan["approval_sha256"], env=env)
+
+    def endorsement_command(
+        self, action: str, sha: str, approval: str = "", env=None,
+    ) -> subprocess.CompletedProcess[str]:
+        command = [
+            "/bin/bash", str(ROOT / "scripts/factory-kit.sh"),
+            "provider-cli-pin", f"endorse-{action}", "--sha", sha,
+            "--operator-id", "test-operator",
+        ]
+        if action == "apply":
+            command += ["--approve-hash", approval]
+        return subprocess.run(
+            command, capture_output=True, text=True, check=False,
+            env={**(env or self.env), "FACTORY_KITS_ROOT": str(self.kits)},
+            timeout=30,
+        )
 
     def test_healthy_links_exact_receipt_and_idempotent_check(self) -> None:
         applied = self.apply()
@@ -804,7 +839,8 @@ probe_version() {{ "$@"; }}
         release_b = self.kits / "releases" / SHA_B
         release_b.mkdir(mode=0o700)
         self.copy_release_files(release_b)
-        self.write_manifest(release_b, SHA_B, TREE_B)
+        tree_b = self.release_tree(release_b)
+        self.write_manifest(release_b, SHA_B, tree_b)
         self.seal(release_b)
         helper_b = release_b / "scripts/owner-provider-cli-pin.py"
 
@@ -842,6 +878,108 @@ probe_version() {{ "$@"; }}
         doctor = (ROOT / "scripts/factory-doctor.sh").read_text()
         self.assertIn('bash "$KIT_DIR/scripts/factory-kit.sh"', doctor)
         self.assertIn('provider-cli-pin check --sha "$KIT_SHA"', doctor)
+
+    def test_unchanged_release_endorsement_needs_no_product_maintenance(self) -> None:
+        product = self.home / "product-endorsement"
+        factory = product / "factory"
+        factory.mkdir(parents=True)
+        maintenance = factory / "MAINTENANCE"
+        maintenance.write_text(json.dumps({
+            "schema_version": 1, "project": "endorsement",
+            "product_path": str(product),
+        }))
+        maintenance.chmod(0o600)
+        project = self.kits / "projects/endorsement"
+        project.mkdir()
+        active = project / "active.json"
+        active.write_text(json.dumps({
+            "contract_version": "2.0.0", "kit_sha": SHA, "kit_tree": TREE,
+            "product_path": str(product), "project": "endorsement",
+            "release_path": str(self.release),
+        }))
+        active.chmod(0o600)
+        self.assertEqual(self.apply().returncode, 0)
+        maintenance.unlink()
+
+        release_b = self.kits / "releases" / SHA_B
+        release_b.mkdir(mode=0o700)
+        self.copy_release_files(release_b)
+        tree_b = self.release_tree(release_b)
+        self.write_manifest(release_b, SHA_B, tree_b)
+        self.seal(release_b)
+        mutable = release_b / "scripts/adapters/codex.sh"
+        original_contract = mutable.read_bytes()
+        mutable.chmod(mutable.stat().st_mode | 0o200)
+        mutable.write_bytes(original_contract + b"\n# drift\n")
+        self.seal(release_b)
+        self.write_manifest(release_b, SHA_B, self.release_tree(release_b))
+        refused = self.endorsement_command("plan", SHA_B)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("contract changed", refused.stderr)
+        mutable.chmod(mutable.stat().st_mode | 0o200)
+        mutable.write_bytes(original_contract)
+        self.seal(release_b)
+        self.write_manifest(release_b, SHA_B, tree_b)
+        config_before = (self.factory / "global.env").read_bytes()
+        links_before = {
+            name: os.readlink(self.factory / "bin" / name)
+            for name in ("claude", "codex", "agent", "codex-code-mode-host")
+        }
+
+        planned = self.endorsement_command("plan", SHA_B)
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        approval = json.loads(planned.stdout)["approval_sha256"]
+        source_receipt = (self.factory / "provider-cli-pin.json").read_bytes()
+        drifted = json.loads(source_receipt)
+        drifted["test_revision"] = 1
+        unsigned = dict(drifted)
+        unsigned.pop("receipt_sha256")
+        drifted["receipt_sha256"] = hashlib.sha256(
+            json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        (self.factory / "provider-cli-pin.json").write_text(
+            json.dumps(drifted, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        stale = self.endorsement_command("apply", SHA_B, approval)
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertIn("approval hash does not match", stale.stderr)
+        (self.factory / "provider-cli-pin.json").write_bytes(source_receipt)
+
+        planned = self.endorsement_command("plan", SHA_B)
+        approval = json.loads(planned.stdout)["approval_sha256"]
+        crashed = self.endorsement_command(
+            "apply", SHA_B, approval,
+            {
+                **self.env,
+                "FACTORY_PROVIDER_CLI_PIN_TEST_EXIT_AFTER": "endorsement-receipt",
+            },
+        )
+        self.assertEqual(crashed.returncode, 91, crashed.stderr)
+        committed_receipt = (self.factory / "provider-cli-pin.json").read_bytes()
+        self.assertNotEqual(committed_receipt, source_receipt)
+        self.assertFalse((self.factory / "provider-cli-pin.transaction.json").exists())
+        applied = self.endorsement_command("apply", SHA_B, approval)
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertEqual(
+            (self.factory / "provider-cli-pin.json").read_bytes(), committed_receipt,
+        )
+        receipt_after = (self.factory / "provider-cli-pin.json").read_bytes()
+        replay = self.endorsement_command("apply", SHA_B, approval)
+        self.assertEqual(replay.returncode, 0, replay.stderr)
+        self.assertEqual((self.factory / "provider-cli-pin.json").read_bytes(), receipt_after)
+        self.assertEqual((self.factory / "global.env").read_bytes(), config_before)
+        self.assertEqual(
+            {
+                name: os.readlink(self.factory / "bin" / name)
+                for name in links_before
+            },
+            links_before,
+        )
+        old = self.command("check")
+        new = self.command(
+            "check", release=release_b, sha=SHA_B, tree=tree_b,
+        )
+        self.assertEqual((old.returncode, new.returncode), (0, 0), new.stderr)
 
     def test_legacy_contract_active_release_is_allowlisted(self) -> None:
         legacy = self.kits / "releases" / SHA_LEGACY

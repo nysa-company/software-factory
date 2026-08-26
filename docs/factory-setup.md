@@ -141,7 +141,24 @@ provider state, ticket branches, or paid roles are created.
   bash scripts/factory-kit.sh provider-cli-pin check --sha "$FACTORY_SHA"
   ```
 
-  The transaction updates only the three exact global pin keys and the
+  When the candidate release has the exact same sealed provider contract and
+  the current receipt is ready, endorse the candidate without stopping active
+  products or changing provider links/configuration:
+
+  ```bash
+  bash scripts/factory-kit.sh provider-cli-pin endorse-plan \
+    --sha "$FACTORY_SHA" --operator-id "<operator-id>"
+  bash scripts/factory-kit.sh provider-cli-pin endorse-apply \
+    --sha "$FACTORY_SHA" --operator-id "<operator-id>" \
+    --approve-hash "<plan approval_sha256>"
+  bash scripts/factory-kit.sh provider-cli-pin check --sha "$FACTORY_SHA"
+  ```
+
+  Any provider-contract or current-pin drift refuses endorsement; use the
+  drained maintenance transaction above instead.
+
+  The full maintenance transaction updates only the three exact global pin
+  keys and the
   `~/.factory/bin/{claude,codex,codex-code-mode-host,agent}` links. The Codex
   companion must be an executable sibling of the resolved `--codex-bin`; the
   transaction derives it without searching `PATH`, and binds both binaries as
