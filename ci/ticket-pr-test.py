@@ -1319,6 +1319,85 @@ else:
                 self.product, self.product, "T-100", head,
             )
 
+    def test_narrator_recovery_accepts_only_valid_post_review_fallback(self):
+        route_plan, journal = self.prepare_route_migration()
+        ticket = self.product / "factory/tickets/T-100.md"
+        ticket.write_text(ticket.read_text().replace(KIT_SHA, "c" * 40))
+        (self.product / "factory/KIT_PIN").write_text("c" * 40 + "\n")
+        self.commit_and_push("align reviewed route release")
+        self.prepare_narrator(accounting_state="abandoned_conservative")
+
+        prior = MANAGER.active_resolution(journal)
+        fallback = ROUTER.resolve_fallback_policy(
+            self.catalog,
+            self.routes,
+            self.profiles[prior["profile_id"]],
+            self.readiness,
+            prior,
+            "builder",
+            prior["selections"]["builder"]["route_id"],
+            ["builder", "reviewer"],
+            {"P": ["openai"], "T": ["anthropic"], "B": ["openai"]},
+        )
+        updated = MANAGER.append_fallback_revision(
+            journal,
+            fallback,
+            "d" * 64,
+            "e" * 64,
+            "provider_unavailable",
+            {"operator_id": "operator-1", "receipt_id": "receipt-1"},
+            "2026-07-20T00:01:00Z",
+            self.catalog,
+            self.routes,
+            self.profiles,
+        )
+        route_plan.write_text(ROUTER.canonical_json(updated) + "\n")
+        self.commit_and_push("append authenticated fallback")
+
+        environment = {
+            "FACTORY_CONTROLLER_STATE_DIR": str(self.controller_state),
+            "FACTORY_MODEL_STATE_ROOT": str(self.model_state),
+            "FACTORY_PROJECT": "example-product",
+        }
+        head = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        with patch.dict(os.environ, environment):
+            TICKET_PR.validate_review_lineage(
+                self.product, self.product, "T-100", head,
+            )
+
+        for name, mutate in (
+            ("malformed", lambda value: value["revisions"][-1].update(
+                revision_hash="0" * 64,
+            )),
+            ("other-kind", lambda value: value["revisions"][-1]["body"].update(
+                kind="other",
+            )),
+        ):
+            with self.subTest(name=name):
+                invalid = copy.deepcopy(updated)
+                mutate(invalid)
+                if name == "other-kind":
+                    revision = invalid["revisions"][-1]
+                    revision["revision_hash"] = MANAGER._revision_hash(
+                        revision["revision"], revision["parent_hash"], revision["body"],
+                    )
+                route_plan.write_text(ROUTER.canonical_json(invalid) + "\n")
+                self.commit_and_push(f"append {name} fallback")
+                head = subprocess.run(
+                    ["git", "-C", self.product, "rev-parse", "HEAD"],
+                    text=True, capture_output=True, check=True,
+                ).stdout.strip()
+                with (
+                    patch.dict(os.environ, environment),
+                    self.assertRaises(TICKET_PR.Refusal),
+                ):
+                    TICKET_PR.validate_review_lineage(
+                        self.product, self.product, "T-100", head,
+                    )
+
     def test_narrator_accepts_only_exact_legacy_approval_audit(self):
         self.prepare_narrator()
         attestation = self.product / "factory/attestations/T-100/bundle.json"
