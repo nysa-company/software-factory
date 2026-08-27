@@ -4581,7 +4581,9 @@ class QualificationEnvironmentTest(unittest.TestCase):
         active = ENVIRONMENT.read(self.root / "projects/relay/active.json")
         self.assertEqual(receipt, replay)
         self.assertEqual(receipt["status"], "doctor_ready")
-        self.assertLessEqual(receipt["total_duration_ms"], 60_000)
+        self.assertLessEqual(
+            receipt["total_duration_ms"], RELEASE.QUALIFICATION_HARD_TIMEOUT_MS,
+        )
         self.assertEqual(active["kit_sha"], candidate)
         self.assertEqual(active["generation"], 2)
         canonical_ledger = subprocess.run([

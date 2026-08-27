@@ -47,7 +47,8 @@ QUALIFICATION_RECOVERY_RECEIPT_SCHEMA = (
 QUALIFICATION_RECOVERY_RESULT_SCHEMA = (
     "nysa.software-factory.qualification-attempt-recovery-result/v1"
 )
-QUALIFICATION_BUDGET_MS = 60_000
+QUALIFICATION_HARD_TIMEOUT_MS = 180_000
+QUALIFICATION_RECOVERY_TIMEOUT_MS = 60_000
 QUALIFICATION_PHASES = (
     "validated", "runtime_ready", "provider_cli_ready",
     "environment_upgraded", "doctor_ready", "complete",
@@ -4019,16 +4020,18 @@ class QualificationTimer:
         return self.prior_ms + max(0, round((time.monotonic() - self.started) * 1000))
 
     def remaining_seconds(self) -> float:
-        return max(0.001, (QUALIFICATION_BUDGET_MS - self.elapsed_ms()) / 1000)
+        return max(
+            0.001, (QUALIFICATION_HARD_TIMEOUT_MS - self.elapsed_ms()) / 1000,
+        )
 
     def check(self) -> None:
-        if self.elapsed_ms() > QUALIFICATION_BUDGET_MS:
+        if self.elapsed_ms() > QUALIFICATION_HARD_TIMEOUT_MS:
             slowest = max(
                 self.current_timings or self.timings,
                 key=lambda item: item["duration_ms"], default={},
             )
             raise ReleaseError(
-                "qualification migration exceeded 60 seconds"
+                f"qualification migration exceeded {QUALIFICATION_HARD_TIMEOUT_MS // 1000} seconds"
                 + (f" during {slowest.get('phase')}" if slowest else "")
             )
 
@@ -4311,7 +4314,7 @@ def validate_qualification_plan(plan: dict[str, Any]) -> None:
         or plan["expires_epoch"] <= plan["created_epoch"]
         or not isinstance(plan.get("preview_elapsed_ms"), int)
         or isinstance(plan.get("preview_elapsed_ms"), bool)
-        or not 0 <= plan["preview_elapsed_ms"] <= QUALIFICATION_BUDGET_MS
+        or not 0 <= plan["preview_elapsed_ms"] <= QUALIFICATION_HARD_TIMEOUT_MS
         or not isinstance(timings, list)
         or any(
             not isinstance(item, dict) or set(item) != {"duration_ms", "phase"}
@@ -4542,7 +4545,7 @@ def qualification_completion(
         or receipt.get("status") != "doctor_ready"
         or not isinstance(receipt.get("total_duration_ms"), int)
         or isinstance(receipt.get("total_duration_ms"), bool)
-        or not 0 <= receipt["total_duration_ms"] <= QUALIFICATION_BUDGET_MS
+        or not 0 <= receipt["total_duration_ms"] <= QUALIFICATION_HARD_TIMEOUT_MS
         or not isinstance(receipt.get("timings"), list)
         or not isinstance(receipt.get("slowest_phase"), dict)
         or not isinstance(receipt.get("generation"), int)
@@ -6276,13 +6279,21 @@ def main() -> int:
     args.process_started = _PROCESS_STARTED
     qualification_command = args.command.startswith("qualification-")
     if qualification_command:
+        timeout_ms = (
+            QUALIFICATION_HARD_TIMEOUT_MS
+            if args.command in {"qualification-upgrade", "qualification-resume"}
+            else QUALIFICATION_RECOVERY_TIMEOUT_MS
+        )
+
         def qualification_timeout(_signal: int, _frame: Any) -> None:
-            raise ReleaseError("qualification migration exceeded 60 seconds")
+            raise ReleaseError(
+                f"qualification migration exceeded {timeout_ms // 1000} seconds"
+            )
 
         signal.signal(signal.SIGALRM, qualification_timeout)
         signal.setitimer(
             signal.ITIMER_REAL,
-            max(0.001, QUALIFICATION_BUDGET_MS / 1000 - (time.monotonic() - _PROCESS_STARTED)),
+            max(0.001, timeout_ms / 1000 - (time.monotonic() - _PROCESS_STARTED)),
         )
     try:
         if args.command == "setup":

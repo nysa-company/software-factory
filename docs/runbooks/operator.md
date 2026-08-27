@@ -785,7 +785,9 @@ runs the existing authenticated environment upgrade, and requires the new
 sealed launcher's Doctor to pass. Its completion receipt binds the original
 active generation and receipt, Factory/product trees, authorization, runtime
 and provider children, fallback evidence, operator, and per-phase monotonic
-timings. Total machine time through Doctor-ready must not exceed 60 seconds.
+timings. Treat 60 seconds as a performance target; the transaction remains
+fail-closed at three minutes so a slower real cohort can recover instead of
+being stranded by the timing target.
 
 If a runtime or provider CLI child would change host state, the command returns
 one `approval_required` plan without changing the lane. Review that exact plan,

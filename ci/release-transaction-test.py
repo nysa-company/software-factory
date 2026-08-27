@@ -4764,7 +4764,9 @@ class ReleaseTransactionTest(unittest.TestCase):
         process.assert_called_once()
         run_json.assert_called_once()
         self.assertEqual(receipt["repair_sha"], "d" * 40)
-        self.assertLess(receipt["total_duration_ms"], RELEASE.QUALIFICATION_BUDGET_MS)
+        self.assertLess(
+            receipt["total_duration_ms"], RELEASE.QUALIFICATION_HARD_TIMEOUT_MS,
+        )
         self.assertEqual(receipt["timings"][:len(historical)], historical)
         self.assertEqual(receipt["journal_sha256"], journals[-1]["record_sha256"])
         self.assertEqual(journals[-1]["phase"], "doctor_ready")
@@ -4926,15 +4928,17 @@ class ReleaseTransactionTest(unittest.TestCase):
 
     def test_qualification_timer_restart_ignores_historical_budget(self) -> None:
         timer = RELEASE.QualificationTimer(
-            [{"duration_ms": RELEASE.QUALIFICATION_BUDGET_MS + 1,
+            [{"duration_ms": RELEASE.QUALIFICATION_HARD_TIMEOUT_MS + 1,
               "phase": "runtime"}],
             0,
         )
         timer.check()
         self.assertEqual(timer.current_timings, [])
         timer.started -= 61
+        timer.check()
+        timer.started -= 120
         with self.assertRaisesRegex(
-            RELEASE.ReleaseError, "exceeded 60 seconds during current",
+            RELEASE.ReleaseError, "exceeded 180 seconds during current",
         ):
             timer.phase("current", lambda: None)
 
