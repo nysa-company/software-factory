@@ -729,9 +729,9 @@ everything the Factory actually enforces lives here.
 - The stable launcher executes the Contract 1.6 `ticket-pr.py` helper with its fixed isolated Python interpreter, never the shell-only helper path; launcher-level contract coverage guards this boundary.
 - `ticket-pr.py` forwards the launcher's canonical dispatcher lease into its internal sequencer check. A missing PR may be recovered at Narrator only after the successful Reviewer lineage proves that no implementation changed after review.
 - Reviewer lineage is execution-bound, not billing-bound: a manifest requires `phase=completed`, `exit_status=0`, and `role_exit=ok`; `accounting_state=abandoned_conservative` is accepted only alongside those fields because Cursor CLI runs reserve the full budget when exact cost is unavailable.
-- Narrator recovery permits post-review changes only to the current ticket document and its exact route journal. The sealed model manager independently validates that route journal before GitHub access; product, test, sibling-ticket, and all other path changes invalidate review.
+- Narrator recovery permits post-review changes only to the current ticket document and its exact route journal. The sealed model manager independently validates the complete journal before GitHub access, and the appended suffix may contain only fallback or release-migration revisions; product, test, sibling-ticket, malformed-route, and all other path changes invalidate review.
 - An unattested evidence bundle missing required sections or its approval question authorizes exactly one additional Narrator run; another invalid result escalates instead of reaching operator approval.
-- Post-review route changes must be append-only release-migration revisions validated by the sealed model manager. Bundle attestation accepts that exact route path, replays each revision's kit and resolution, and binds every successful run to its historical route blob.
+- Post-review route changes must be append-only fallback or release-migration revisions validated by the sealed model manager. Bundle attestation accepts that exact route path, replays each revision's kit and resolution, and binds every successful run to its historical route blob.
 - Activation, reconciliation, and rollback validate nonterminal `Kit-SHA` affinity from committed exact ticket branches. Plain configuration clears its full allowlist before optional file loading, so inherited environment values cannot become machine policy.
 - Protected in-flight release authorization accepts exact old-kit ticket heads from Ready through Approved. A v1 plan becomes a v2 journal; an existing v2 journal receives a parent-hashed release-migration revision that preserves its full history and active resolution. Neither path advances ticket state.
 - Contracts 1.2 through 1.6 reject dirty exact ticket worktrees before ordinary ticket helpers. Contract 1.2 treats approval overlays as unsupported stops; contracts 1.3 through 1.6 consume merge approval only through an unchanged evidence-bound approval attestation.
@@ -8384,3 +8384,12 @@ A successful exact contract-repair apply emits one idempotent resolution event
 bound to the blocked receipt and repair head after releasing its lease. Doctor
 clears older refusal events for that ticket while a later refusal warns again.
 The lifecycle resume remains a separate exact repair-check boundary.
+
+## 2026-08-26 — Decision 620: Post-review fallback remains publishable
+
+Category: Reliability
+
+Ticket-PR lineage accepts a post-review route-only suffix containing fallback
+or release-migration revisions after the sealed model manager validates the
+complete hash chain. Broken hashes, unknown revision kinds, changed prefixes,
+and every post-review product or sibling path remain refused.

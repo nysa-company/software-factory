@@ -1758,7 +1758,10 @@ Narrator input through its authenticated Factory-release history and as an
 ancestor of its exact current head, and the Git blob must remain byte-identical.
 The classifier validates the complete PNG
 chunk stream and refuses unreferenced, nested, sibling, executable, malformed,
-or excessive evidence. The subsequent approval head is validated by one shared
+or excessive evidence. Ticket-PR revalidation permits a post-review route-only
+journal suffix only when the sealed model manager validates its complete hash
+chain and every appended revision is a fallback or release migration. The
+subsequent approval head is validated by one shared
 ticket-PR/attestation helper: it must be the direct child of the exact bundle
 attestation commit, change only the current ticket and a newly added ordinary
 approval receipt, preserve all ticket text except the sealed

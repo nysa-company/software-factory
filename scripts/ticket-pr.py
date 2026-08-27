@@ -614,7 +614,11 @@ def validate_review_lineage(product: Path, workdir: Path, ticket: str, head: str
     if (
         not valid_lineage
         or not suffix
-        or any(item.get("body", {}).get("kind") != "release-migration" for item in suffix)
+        or any(
+            item.get("body", {}).get("kind")
+            not in {"fallback", "release-migration"}
+            for item in suffix
+        )
     ):
         raise Refusal("post-review route migration lineage is invalid")
     if pin_path in untrusted and (
