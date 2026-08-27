@@ -318,6 +318,9 @@ provider state, ticket branches, or paid roles are created.
   refuses. Upgrade keeps source work incomplete and historical, then model
   migration writes the candidate Kit-SHA in `factory/KIT_PIN`, the ticket, and
   its route journal in one CAS-protected push; it never resets ticket work.
+  Replacement refs, a configured alternate replacement namespace, or any
+  common-directory `info/grafts` path refuse migration before exact or replay
+  authority; use the repository's raw object graph.
   If an interrupted sealed batch leaves selected tickets on different
   authenticated releases, authorization v2 keeps `source_kit_sha` at the
   manifest's source root and adds each ticket's exact current

@@ -8,6 +8,7 @@ import base64
 import datetime as dt
 import hashlib
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -175,6 +176,29 @@ def _git(repo: pathlib.Path, *args: str, text: bool = True):
     if result.returncode:
         raise AuthorizationError("in-flight release authorization Git evidence is missing")
     return result.stdout
+
+
+def _reject_alternate_git_topology(repo: pathlib.Path) -> None:
+    common_raw = _git(
+        repo, "rev-parse", "--path-format=absolute", "--git-common-dir",
+    ).rstrip("\n")
+    try:
+        common = pathlib.Path(common_raw).resolve(strict=True)
+    except OSError as error:
+        raise AuthorizationError("alternate Git topology is unsafe") from error
+    grafts = common / "info/grafts"
+    if (
+        not common_raw
+        or "\n" in common_raw
+        or "\r" in common_raw
+        or not common.is_dir()
+        or bool(os.environ.get("GIT_REPLACE_REF_BASE"))
+        or _git(
+            repo, "for-each-ref", "--format=%(refname)", "refs/replace/",
+        ).strip()
+        or os.path.lexists(grafts)
+    ):
+        raise AuthorizationError("alternate Git topology is unsafe")
 
 
 def _ticket_fields(text: str) -> tuple[str, str]:
@@ -353,6 +377,7 @@ def verify_migration(
 ) -> str:
     if not all(SHA.fullmatch(value) for value in (protected, target, current_head)):
         raise AuthorizationError("in-flight release authorization ref is invalid")
+    _reject_alternate_git_topology(repo)
     relative = f"factory/migrations/inflight-release/{target}.json"
     raw = _git(repo, "show", f"{protected}:{relative}")
     project = _git(repo, "show", f"{protected}:factory/PROJECT.env")
