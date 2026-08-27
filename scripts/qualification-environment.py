@@ -2742,6 +2742,45 @@ def validate_successor_upgrade_cohort(
                 )
                 for item in corrections or []
             }
+            try:
+                final_source_role_gap = (
+                    isinstance(migrations, list)
+                    and bool(migrations)
+                    and isinstance(migrations[-1], dict)
+                    and value.get("factory_sha") == source
+                    and migrations[-1].get("to_factory_sha") == source
+                    and migrations[-1].get("to_head_sha")
+                    != value.get("head_sha")
+                    and migrations[-1].get("to_route_plan_sha256")
+                    == value.get("route_plan_sha256")
+                    and isinstance(value.get("base_history"), list)
+                    and bool(value["base_history"])
+                    and value["base_history"][-1]
+                    == value.get("protected_base_sha")
+                    and migrations[-1].get("to_protected_base_sha")
+                    in value["base_history"]
+                    and isinstance(charges, list)
+                    and isinstance(completed, list)
+                    and completed_role_gap(
+                        factory, product, passport, ticket, charges, completed,
+                        migrations[-1]["to_head_sha"], value["head_sha"],
+                        source, corrected,
+                    )
+                )
+            except (
+                AttributeError, OSError, TypeError, ValueError,
+                passport.PassportError,
+            ):
+                final_source_role_gap = False
+            final_projection_valid = (
+                isinstance(migrations, list)
+                and bool(migrations)
+                and isinstance(migrations[-1], dict)
+                and migrations[-1].get("to_protected_base_sha")
+                == value.get("protected_base_sha")
+                and migrations[-1].get("to_route_plan_sha256")
+                == value.get("route_plan_sha256")
+            )
             core_valid = (
                 value.get("schema") == "nysa.software-factory.ticket-passport/v1"
                 and value.get("contract_version") in SUPPORTED_CONTRACTS
@@ -2801,10 +2840,6 @@ def validate_successor_upgrade_cohort(
                         for item in migrations
                         if item["from_factory_sha"] != item["to_factory_sha"]
                     ] == list(zip(releases, releases[1:]))
-                    and migrations[-1]["to_protected_base_sha"]
-                    == value.get("protected_base_sha")
-                    and migrations[-1]["to_route_plan_sha256"]
-                    == value.get("route_plan_sha256")
                 )
             )
             release_lineage_valid = (
@@ -2855,6 +2890,7 @@ def validate_successor_upgrade_cohort(
                         )
                         and migrations[-1]["to_head_sha"]
                         == value.get("head_sha")
+                        and final_projection_valid
                         and migrations[-1]["from_passport_sha256"]
                         == value.get("parent_digest")
                         and migrations[-1]["from_passport_file_sha256"]
@@ -2903,6 +2939,23 @@ def validate_successor_upgrade_cohort(
                     )
                     checkpoint_valid = (
                         (release_lineage_valid or checkpoint_bridge_valid)
+                        and (
+                            final_projection_valid
+                            or final_source_role_gap
+                            and checkpoint_authorization.get("schema")
+                            == (
+                                "nysa.software-factory."
+                                "inflight-release-authorization/v2"
+                            )
+                            and checkpoint.get("branch")
+                            == value.get("branch")
+                            and checkpoint.get("head") == value.get("head_sha")
+                            and checkpoint.get("state")
+                            == value.get("current_state")
+                            and ticket_source_kit(
+                                checkpoint_authorization, checkpoint,
+                            ) == source
+                        )
                         and ticket_source_kit(
                             checkpoint_authorization, checkpoint,
                         ) in releases

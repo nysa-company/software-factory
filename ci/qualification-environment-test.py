@@ -5638,6 +5638,304 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 run(self.product, "git", "rev-parse", "HEAD"), manifest,
             )
 
+    def test_successor_accepts_only_exact_final_completed_role_gap(self) -> None:
+        ticket = "T-101"
+        source = "b" * 40
+        candidate = "c" * 40
+        prior_base = run(self.product, "git", "rev-parse", "HEAD")
+        run(self.product, "git", "switch", "-qc", f"ticket/{ticket}")
+        ticket_path = self.product / f"factory/tickets/{ticket}.md"
+        ticket_path.write_text(
+            ticket_path.read_text().replace("State: Ready", "State: Building")
+            + f"Kit-SHA: {source}\n",
+            encoding="utf-8",
+        )
+        route = self.product / f"factory/route-plans/{ticket}.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        run(self.product, "git", "add", "factory")
+        run(self.product, "git", "commit", "-qm", "source checkpoint")
+        gap_start = run(self.product, "git", "rev-parse", "HEAD")
+        ticket_path.write_text(
+            ticket_path.read_text() + "\nPlanner epoch 2\n", encoding="utf-8",
+        )
+        run(self.product, "git", "add", str(ticket_path))
+        run(self.product, "git", "commit", "-qm", "planner output")
+        planner_head = run(self.product, "git", "rev-parse", "HEAD")
+        ticket_path.write_text(
+            ticket_path.read_text() + "Spec-Lint: PASS\n", encoding="utf-8",
+        )
+        run(self.product, "git", "add", str(ticket_path))
+        run(self.product, "git", "commit", "-qm", "spec linter output")
+        gap_end = run(self.product, "git", "rev-parse", "HEAD")
+        route_sha256 = hashlib.sha256(route.read_bytes()).hexdigest()
+        run(self.product, "git", "switch", "-q", "main")
+        (self.product / "protected-refresh.txt").write_text("refresh\n")
+        run(self.product, "git", "add", "protected-refresh.txt")
+        run(self.product, "git", "commit", "-qm", "advance protected base")
+        current_base = run(self.product, "git", "rev-parse", "HEAD")
+
+        controller = (self.workspace / "final-gap-controller").resolve()
+        passports = controller / "passports"
+        passports.mkdir(mode=0o700, parents=True)
+        controller.chmod(0o700)
+        secret = b"p" * 32
+        key = controller / "passport.key"
+        key.write_bytes(secret)
+        key.chmod(0o600)
+        passport_path = passports / f"{ticket}.json"
+
+        def completion(role: str, head: str, run_id: str) -> dict[str, object]:
+            return {
+                "contract_version": "1.8.0",
+                "factory_sha": source,
+                "head_before": head,
+                "manifest_sha256": ("1" if role == "planner" else "2") * 64,
+                "output_sha256": "3" * 64,
+                "role": role,
+                "run_id": run_id,
+                "transition_receipt_sha256": "4" * 64,
+            }
+
+        completed = [
+            completion("planner", gap_start, "planner-run"),
+            completion("spec-linter", planner_head, "spec-run"),
+        ]
+        charges = [{
+            "accounting_state": "completed",
+            "charge_micro_usd": 1,
+            **{
+                name: item[name] for name in (
+                    "contract_version", "factory_sha", "head_before",
+                    "manifest_sha256", "role", "run_id",
+                    "transition_receipt_sha256",
+                )
+            },
+        } for item in completed]
+
+        def passport_value(
+            head: str = gap_end,
+            role_evidence: list[dict[str, object]] = completed,
+            accounting: list[dict[str, object]] = charges,
+        ) -> dict[str, object]:
+            self.write_passport(passport_path, secret, ticket, source)
+            value = json.loads(passport_path.read_text(encoding="utf-8"))
+            value.pop("authentication_sha256")
+            value.pop("passport_sha256")
+            value.update({
+                "base_history": [prior_base, current_base],
+                "charge_records": accounting,
+                "completed_role_evidence": role_evidence,
+                "cumulative_charges_micro_usd": sum(
+                    item["charge_micro_usd"] for item in accounting
+                ),
+                "current_stage": "AWAIT-OPERATOR semantic-round authorization",
+                "current_state": "Building",
+                "head_sha": head,
+                "head_tree": run(
+                    self.product, "git", "rev-parse", f"{head}^{{tree}}",
+                ),
+                "migration_history": [{
+                    "from_factory_sha": source,
+                    "from_head_sha": prior_base,
+                    "from_passport_file_sha256": "2" * 64,
+                    "from_passport_sha256": "3" * 64,
+                    "from_protected_base_sha": prior_base,
+                    "from_route_plan_sha256": route_sha256,
+                    "schema": (
+                        "nysa.software-factory.ticket-passport-migration/v2"
+                    ),
+                    "to_factory_sha": source,
+                    "to_head_sha": gap_start,
+                    "to_protected_base_sha": prior_base,
+                    "to_route_plan_sha256": route_sha256,
+                }],
+                "parent_digest": "3" * 64,
+                "parent_file_sha256": "2" * 64,
+                "protected_base_sha": current_base,
+                "route_plan_sha256": route_sha256,
+                "ticket_blob": run(
+                    self.product, "git", "rev-parse",
+                    f"{head}:factory/tickets/{ticket}.md",
+                ),
+            })
+            return value
+
+        authorization = (
+            self.product / "factory/migrations/inflight-release"
+            / f"{candidate}.json"
+        )
+        authorization.parent.mkdir(parents=True)
+
+        def authorize(
+            head: str,
+            state: str = "Building",
+            schema: str = (
+                "nysa.software-factory.inflight-release-authorization/v2"
+            ),
+            branch: str = f"ticket/{ticket}",
+            ticket_source: str = source,
+        ) -> str:
+            entry = {
+                "branch": branch, "head": head,
+                "state": state, "ticket": ticket,
+            }
+            if schema.endswith("/v2"):
+                entry["source_kit_sha"] = ticket_source
+            authorization.write_text(json.dumps({
+                "repository": "example/product",
+                "schema": schema,
+                "source_kit_sha": source,
+                "target_kit_sha": candidate,
+                "tickets": [entry],
+            }, sort_keys=True, separators=(",", ":")) + "\n")
+            run(self.product, "git", "add", str(authorization))
+            run(self.product, "git", "commit", "-qm", "authorize final gap")
+            return run(self.product, "git", "rev-parse", "HEAD")
+
+        manifest = {
+            "factory_sha": candidate,
+            "mode": "successor",
+            "source_factory_sha": source,
+            "tickets": [ticket],
+        }
+        authorize(gap_end)
+        valid = passport_value()
+        self.sign_passport(passport_path, secret, valid)
+        controller_bytes = {
+            path.relative_to(controller): path.read_bytes()
+            for path in controller.rglob("*") if path.is_file()
+        }
+        for _ in range(2):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", source,
+                prior_base, manifest,
+            )
+        self.assertEqual(controller_bytes, {
+            path.relative_to(controller): path.read_bytes()
+            for path in controller.rglob("*") if path.is_file()
+        })
+
+        cases = {
+            "missing-accounting": lambda value: value.update(charge_records=[]),
+            "foreign-accounting": lambda value: value[
+                "charge_records"
+            ][0].update(factory_sha="d" * 40),
+            "nonterminal-accounting": lambda value: value[
+                "charge_records"
+            ][0].update(accounting_state="active"),
+            "malformed-terminal-base": lambda value: value.update(
+                base_history=[current_base, prior_base],
+            ),
+            "base-drift": lambda value: value.update(
+                protected_base_sha=prior_base,
+            ),
+            "route-drift": lambda value: value.update(
+                route_plan_sha256="f" * 64,
+            ),
+        }
+        for label, mutate in cases.items():
+            with self.subTest(label=label):
+                changed = json.loads(json.dumps(valid))
+                mutate(changed)
+                if label == "missing-accounting":
+                    changed["cumulative_charges_micro_usd"] = 0
+                self.sign_passport(passport_path, secret, changed)
+                with self.assertRaisesRegex(
+                    ENVIRONMENT.EnvironmentError,
+                    "successor qualification requires every selected ticket",
+                ):
+                    ENVIRONMENT.validate_successor_upgrade_cohort(
+                        self.factory, self.product, controller, "relay", source,
+                        prior_base, manifest,
+                    )
+
+        self.sign_passport(passport_path, secret, valid)
+        authorize(gap_start)
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "successor qualification requires every selected ticket",
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", source,
+                prior_base, manifest,
+            )
+        authorize(
+            gap_end, schema=(
+                "nysa.software-factory.inflight-release-authorization/v1"
+            ),
+        )
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "successor qualification requires every selected ticket",
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", source,
+                prior_base, manifest,
+            )
+        for label, options in {
+            "checkpoint-branch": {"branch": "ticket/T-999"},
+            "checkpoint-state": {"state": "Review"},
+            "checkpoint-source": {"ticket_source": "d" * 40},
+        }.items():
+            with self.subTest(label=label):
+                authorize(gap_end, **options)
+                with self.assertRaisesRegex(
+                    ENVIRONMENT.EnvironmentError,
+                    "successor qualification requires every selected ticket",
+                ):
+                    ENVIRONMENT.validate_successor_upgrade_cohort(
+                        self.factory, self.product, controller, "relay", source,
+                        prior_base, manifest,
+                    )
+
+        run(self.product, "git", "switch", "-qc", "nonlinear-gap", gap_start)
+        ticket_path.write_text(
+            ticket_path.read_text() + "\nNonlinear planner\n", encoding="utf-8",
+        )
+        run(self.product, "git", "add", str(ticket_path))
+        run(self.product, "git", "commit", "-qm", "nonlinear planner")
+        nonlinear_planner = run(self.product, "git", "rev-parse", "HEAD")
+        run(self.product, "git", "switch", "-qc", "nonlinear-side")
+        ticket_path.write_text(
+            ticket_path.read_text() + "side\n", encoding="utf-8",
+        )
+        run(self.product, "git", "add", str(ticket_path))
+        run(self.product, "git", "commit", "-qm", "nonlinear side")
+        run(self.product, "git", "switch", "-q", "nonlinear-gap")
+        run(self.product, "git", "merge", "--no-ff", "-qm", "merge side",
+            "nonlinear-side")
+        nonlinear_merge = run(self.product, "git", "rev-parse", "HEAD")
+        ticket_path.write_text(
+            ticket_path.read_text() + "Spec-Lint: PASS\n", encoding="utf-8",
+        )
+        run(self.product, "git", "add", str(ticket_path))
+        run(self.product, "git", "commit", "-qm", "nonlinear spec linter")
+        nonlinear_end = run(self.product, "git", "rev-parse", "HEAD")
+        run(self.product, "git", "switch", "-q", "main")
+        nonlinear_completed = [
+            completion("planner", gap_start, "nonlinear-planner"),
+            completion("spec-linter", nonlinear_merge, "nonlinear-spec"),
+        ]
+        nonlinear_charges = [{
+            **charges[index],
+            "head_before": item["head_before"],
+            "run_id": item["run_id"],
+        } for index, item in enumerate(nonlinear_completed)]
+        nonlinear = passport_value(
+            nonlinear_end, nonlinear_completed, nonlinear_charges,
+        )
+        self.sign_passport(passport_path, secret, nonlinear)
+        authorize(nonlinear_end)
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "successor qualification requires every selected ticket",
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", source,
+                prior_base, manifest,
+            )
+
     def test_candidate_native_successor_refuses_before_upgrade_publication(self) -> None:
         args = argparse.Namespace(
             factory_root=self.factory,
