@@ -2284,6 +2284,154 @@ PY
             ),
             "replay",
         )
+        authorized_head = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", f"{replay_head}^"],
+            text=True,
+        ).strip()
+        self.assertEqual(
+            verify_migration(
+                self.workdir, protected_head, self.kit_sha, "T-901",
+                "ticket/T-901", authorized_head,
+            ),
+            "exact",
+        )
+
+        def assert_topology_refused(head: str) -> None:
+            with self.assertRaisesRegex(
+                ValueError, "alternate Git topology is unsafe",
+            ):
+                verify_migration(
+                    self.workdir, protected_head, self.kit_sha, "T-901",
+                    "ticket/T-901", head,
+                )
+
+        common = Path(subprocess.check_output(
+            [
+                "git", "-C", str(self.workdir), "rev-parse",
+                "--path-format=absolute", "--git-common-dir",
+            ],
+            text=True,
+        ).strip()).resolve()
+        grafts = common / "info/grafts"
+        replay_tree = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", f"{replay_head}^{{tree}}"],
+            text=True,
+        ).strip()
+        forged_head = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "commit-tree", replay_tree],
+            input="forged replay\n", text=True,
+        ).strip()
+        grafts.write_text(f"{forged_head} {authorized_head}\n")
+        assert_topology_refused(forged_head)
+        grafts.unlink()
+        grafts.mkdir()
+        assert_topology_refused(replay_head)
+        grafts.rmdir()
+        grafts.symlink_to("missing-grafts")
+        assert_topology_refused(replay_head)
+        grafts.unlink()
+
+        replacement_commit = subprocess.check_output(
+            [
+                "git", "-C", str(self.workdir), "commit-tree", replay_tree,
+                "-p", protected_head,
+            ],
+            input="replacement replay\n", text=True,
+        ).strip()
+        replacement = f"refs/replace/{replay_head}"
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "update-ref", replacement,
+                replacement_commit,
+            ],
+            check=True,
+        )
+        split_environment = dict(os.environ)
+        split_environment.pop("GIT_NO_REPLACE_OBJECTS", None)
+        ordinary_parent = subprocess.check_output(
+            ["git", "-C", str(self.workdir), "rev-parse", f"{replay_head}^"],
+            env=split_environment, text=True,
+        ).strip()
+        raw_parent = subprocess.check_output(
+            [
+                "git", "-C", str(self.workdir), "--no-replace-objects",
+                "rev-parse", f"{replay_head}^",
+            ],
+            env=split_environment, text=True,
+        ).strip()
+        self.assertNotEqual(ordinary_parent, raw_parent)
+        previous_no_replace = os.environ.get("GIT_NO_REPLACE_OBJECTS")
+        os.environ["GIT_NO_REPLACE_OBJECTS"] = "1"
+        try:
+            assert_topology_refused(replay_head)
+            assert_topology_refused(authorized_head)
+        finally:
+            if previous_no_replace is None:
+                os.environ.pop("GIT_NO_REPLACE_OBJECTS")
+            else:
+                os.environ["GIT_NO_REPLACE_OBJECTS"] = previous_no_replace
+        pushes_before_refusal = network_trace.read_text().splitlines().count("push")
+        replacement_refusal = migrate(
+            "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
+            "--approve-hash", replay_preview["preview_hash"],
+            "--readiness-hash", replay_preview["readiness_sha256"],
+            "--approved-by", "tester",
+            run_environment={
+                key: value for key, value in environment.items()
+                if key != "GIT_NO_REPLACE_OBJECTS"
+            },
+            check=False,
+        )
+        self.assertEqual(replacement_refusal.returncode, 2)
+        self.assertIn("exact protected in-flight", replacement_refusal.stdout)
+        self.assertEqual(
+            network_trace.read_text().splitlines().count("push"),
+            pushes_before_refusal,
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "-C", str(self.workdir), "--no-replace-objects",
+                 "rev-parse", "HEAD"],
+                text=True,
+            ).strip(),
+            replay_head,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "pack-refs", "--all", "--prune"],
+            check=True,
+        )
+        self.assertFalse((common / replacement).exists())
+        self.assertIn(
+            f"{replacement_commit} {replacement}\n",
+            (common / "packed-refs").read_text(),
+        )
+        assert_topology_refused(replay_head)
+        subprocess.run(
+            ["git", "-C", str(self.workdir), "update-ref", "-d", replacement],
+            check=True,
+        )
+        alternate_base = "refs/alternate-replace/"
+        alternate = f"{alternate_base}{authorized_head}"
+        subprocess.run(
+            [
+                "git", "-C", str(self.workdir), "update-ref", alternate,
+                replay_head,
+            ],
+            check=True,
+        )
+        previous_base = os.environ.get("GIT_REPLACE_REF_BASE")
+        os.environ["GIT_REPLACE_REF_BASE"] = alternate_base
+        try:
+            assert_topology_refused(replay_head)
+        finally:
+            if previous_base is None:
+                os.environ.pop("GIT_REPLACE_REF_BASE")
+            else:
+                os.environ["GIT_REPLACE_REF_BASE"] = previous_base
+            subprocess.run(
+                ["git", "-C", str(self.workdir), "update-ref", "-d", alternate],
+                check=True,
+            )
         replay = migrate(
             "migrate", "--ticket", "T-901", "--workdir", str(self.workdir),
             "--approve-hash", replay_preview["preview_hash"],

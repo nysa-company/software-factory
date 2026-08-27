@@ -8489,3 +8489,13 @@ An earlier checkpoint may precede authenticated passport work and accepts exact
 or replayed prior route authority. Candidate authorization remains exact-only;
 divergent history and every existing identity, evidence, and accounting drift
 remain fail-closed.
+
+## 2026-08-27 — Decision 630: In-flight migration trusts one raw Git graph
+
+Category: Security
+
+The shared in-flight migration verifier rejects every standard replacement ref,
+a configured alternate replacement namespace, and any file, directory, or link
+at the resolved common-directory `info/grafts` path before exact or replay
+authority. Replacement reads remain disabled, so every supported caller sees
+the same raw parent graph after verification.

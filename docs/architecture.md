@@ -2038,6 +2038,10 @@ rewrites the preserved ticket history.
 Activation and mutating model-route migration use the same strict authorization
 parser. Migration revalidates current protected main, the selected remote ticket
 head, repository, source and target kit, branch, and state before changing Git.
+Before returning exact or replay authority, the shared verifier rejects every
+standard replacement ref, a configured alternate replacement namespace, and
+any common-directory `info/grafts` path. Replacement reads also remain disabled,
+so verification and the following supported Git commands use one raw object graph.
 Successor activation accepts an `abandoned_conservative` charge as completed
 only through its exact raw success artifact or one authenticated passport
 completion correction for the same run, receipt, role, and failed release.
