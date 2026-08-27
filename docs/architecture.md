@@ -2022,8 +2022,13 @@ historical passport cannot satisfy a newer role-history validator. The
 preparer still requires the source HMAC, release lineage, run accounting,
 passport commit/tree/ticket/route identity, an unchanged route through the
 authorized descendant, and an authorization set equal to the selected cohort;
-it does not relabel descendant source work as completed candidate evidence. If
-the certified ticket ref is an ancestor of the authorized checkpoint, route
+it does not relabel descendant source work as completed candidate evidence.
+If completed source roles advanced the passport after its final migration,
+that terminal gap is accepted only when its commits form the exact accounted
+linear role sequence, the current protected base terminates authenticated base
+history, and a v2 entry binds the passport's exact branch, head, state, source,
+and unchanged route. The validator neither infers nor writes a migration edge.
+If the certified ticket ref is an ancestor of the authorized checkpoint, route
 migration publishes the checkpoint and its Kit-SHA migration child in one
 exact-head CAS fast-forward. It never deletes, rewinds, force-resets, or
 rewrites the preserved ticket history.

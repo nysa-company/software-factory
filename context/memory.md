@@ -8432,3 +8432,14 @@ Concurrent qualification reconciliation may idempotently create the shared
 retained-runs directory. Every caller still revalidates its canonical path,
 owner, directory type, and exact `0700` mode before retaining artifacts;
 symlinks, files, foreign ownership, and unsafe modes remain fail-closed.
+
+## 2026-08-27 — Decision 625: Successor checkpoints admit exact terminal role gaps
+
+Category: Reliability
+
+Successor validation accepts completed source-role commits after the final
+passport migration only through the current protected v2 checkpoint. The gap
+must be linear and exactly accounted, retain the final migration base in
+history, terminate that history at the current protected base, and preserve
+the route while the checkpoint binds the exact branch, head, state, and source.
+Validation remains read-only and never infers a migration edge.
