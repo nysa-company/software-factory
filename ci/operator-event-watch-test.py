@@ -113,13 +113,14 @@ class OperatorEventWatchTest(unittest.TestCase):
     def test_delivery_retry_projects_retry_and_exhaustion(self) -> None:
         self.write(self.source(
             "role_delivery_retry",
-            input_head="a" * 40, role="builder", role_exit="role_exit_dirty",
+            input_head="a" * 40, role="builder",
+            role_exit="role_exit_protected_ticket_mutation",
             run_id="run-1", transition_receipt_sha256="b" * 64,
         ))
         self.write(self.source(
             "role_blocked", delivery_retry_exhausted=True,
             first_run_id="run-1", input_head="a" * 40, role="builder",
-            role_exit="role_exit_dirty", run_id="run-2",
+            role_exit="role_exit_protected_ticket_mutation", run_id="run-2",
             terminal_reason_code="",
         ))
         result = self.run_watch("--limit", "2", "--idle-timeout-seconds", "1")
@@ -129,7 +130,9 @@ class OperatorEventWatchTest(unittest.TestCase):
             [event["action"] for event in events],
             ["automatic_role_retry", "terminal_role_failure"],
         )
-        self.assertEqual(events[0]["reason"], "role_exit_dirty")
+        self.assertEqual(
+            events[0]["reason"], "role_exit_protected_ticket_mutation",
+        )
         self.assertEqual(
             events[1]["reason"],
             "automatic_delivery_retry_exhausted:first_run=run-1",

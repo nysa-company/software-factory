@@ -10,7 +10,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - Failed-attempt preview, replay, and historical committed-role checks carry only unchanged tracked baseline symlinks whose tree, index, and filesystem targets agree; every added, removed, changed, staged, or untracked symlink remains fail-closed.
 - A submitted Claude individual or organization-monthly spend-limit terminal and a strict Cursor zero-turn usage-exhaustion terminal are release-typed, fully accounted, and qualification-latched before another role launch; Cursor missing-result and timeout terminals retain their bounded reason, and operator watch explains whether to restore capacity or inspect provider availability. Planner login shells validate Node/npm through the certified pre-guard PATH while retaining the package-command guard for task execution. A failed submitted mutating role preserves policy-valid dirty output under one immutable run ref, restores the authenticated input before passport export, and replays cleanup without another provider attempt; unsafe or Reviewer dirt remains fail-closed and untouched.
 - Any nonrecoverable role terminal in a fixed qualification cohort latches the same atomic launch boundary before the claim blocks or cancels; bounded invalid-output, prior-release launch-void, direct-model identity, and authenticated Cursor fallback recovery remain runnable, while already-admitted siblings only drain and account.
-- A qualification role that returns dirty output, invalid bounded output, or no commit may retry exactly once only after the first attempt is terminal-accounted, its authenticated input is clean and unchanged locally and remotely, and durable release/cohort/route/receipt evidence binds the replay. A second delivery failure on that same input latches the cohort before any sibling admission, pin, recovery, lease acquisition or renewal, or role mutation; exact terminal accounting and cleanup releases continue, and restart reconstructs the latch from the authenticated first-retry event and second terminal.
+- A qualification role that returns dirty output, invalid bounded output, no commit, or a contained protected-ticket mutation may retry exactly once only after the first attempt is terminal-accounted, its authenticated input is clean and unchanged locally and remotely, and durable release/cohort/route/receipt evidence binds the replay. A second delivery failure on that same input latches the cohort before any sibling admission, pin, recovery, lease acquisition or renewal, or role mutation; exact terminal accounting and cleanup releases continue, and restart reconstructs the latch from the authenticated first-retry event and second terminal.
 - Qualification fallback and finish are ticket-independent within the sealed cohort: one candidate-scoped role attempt may fall back, but a replaced transition receipt cannot reopen that role before an intervening same-role success; a superseded direct preview names the latest unique run, evidence, and exact safe preview; explicit v1 fallback migrates atomically under the same approval, and blocked siblings do not starve an independent typed wait or approval. Aggregate same-head retry accepts only the safe current or legacy Factory `ci` template grammar.
 - An authenticated release-scoped qualification fallback refusal stops explicit preview and apply before readiness or mutation, names its claim evidence, and leaves only successor or fresh-cohort recovery; watch preserves the failed run across restart.
 - Recognized GitHub/Git transport loss is a typed wait, never a cohort defect. Exact remote confirmation and receipt/passport-bound replay resume post-provider role and publication commits without another model call; a disconnect inside a submitted provider attempt remains terminal-accounted and is not transport-replayed.
@@ -33,6 +33,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - The local operator console keeps supported approval hashes in its authenticated server session, and qualification resume reads its owner-only plan internally: operators approve an exact action without transcribing a digest, while sealed apply paths still recompute and validate the binding before mutation.
 - Fresh operator maps use an object-valued `_config` accepted by qualification, and nonvisual publication treats only exact current-ticket Ready audit receipts as metadata; foreign or malformed receipt paths remain semantic and fail closed.
 - Disjoint protected sibling refreshes recognize exact sibling Ready audit receipts and retain existing Reviewer/Narrator evidence. Done reuses exact approved-head checks only across a tree-identical authenticated merge with unchanged protected check policy; every mismatch or unavailable head result falls back to merge-commit evidence.
+- Same-release semantic authorization and reviewer-void imports accept one combined protected-base refresh only when their valid v2 migration edge matches the passport's final two authenticated base-history entries; unchanged-base imports retain their existing strict path, and restart imports the edge once without remigration.
 - Fresh isolated preparation completes a sealed provider-free prime before returning: the exact cohort is claimed, batch-pinned, and advanced to unconsumed Planner receipts before the existing restart boundary. Replay first authenticates the exact publication and controller prefix, then remains idempotent only while provider accounting is pristine and every receipt remains exact and unconsumed; fresh Doctor checks selected-ticket readiness concurrently in deterministic order, and an exact unchanged primed Planner receipt skips only the duplicate controller preflight while launcher admission still consumes and revalidates it. Fresh three-ticket reduction requires replay-stable activation, Planner-submission, final-Narrator, and Done boundaries, reports all four latency observations, and enforces 240-second activation and Planner plus 900-second cohort wall ceilings; per-ticket Narrator timing is report-only because cohort closeout is sibling-coupled. The ordinary one-ticket profile also enforces the 480-second final Narrator-to-Done wall ceiling.
 - Targeted cancellation reconciles provider attempts through the launcher's validated `FACTORY_PROVIDER_DB`; only direct development lanes without that binding use their existing lane-local database. Missing, unsafe, or foreign provider state fails before stale manifest or claim cleanup. An admitted attempt with a durable recovery record writes terminal intent before coordinator mutation; restart adopts only an exact matching result and charge, while post-GO conservative cancellation retains the full reservation exactly once. Existing provider databases serve status through a validated read-only connection; only supported first use initializes them.
 - Qualification successor recovery binds one exact dead matching global Cursor account row or its absence. Manifest-backed recovery completes unchanged nested cancellation before releasing that row. A dead submitted CLI wrapper additionally binds its heartbeat, immutable lease identity, exact sidecar and provider row, active-run claim, and runtime inode; recovery drains only those processes, charges once, and quarantines only the bound claim and runtime before deletion. Provider-only pre-GO recovery may bind its exact dead authority-ledger claim, release the account row, then quarantine only that claim before removing its selected expired dispatch lease and exact safe empty launch-lock inode. Doctor reports recovery only after exact qualification identity and authority binding pass, while controller and drain checks resolve claims beside the authenticated runtime ledger. Completed replay retains only durable receipts.
@@ -8402,3 +8403,32 @@ The first authenticated Spec-linter FAIL in a post-Reviewer repair epoch
 records `planner-spec-linter` attempt-one metadata on its Planner receipt.
 Preflight can therefore derive the existing narrow `CATCHUP planner` admission;
 ordinary Planner work, malformed role history, and capped rounds remain closed.
+
+## 2026-08-27 — Decision 622: Contained protected mutations get one delivery retry
+
+Category: Reliability
+
+A qualification role whose protected-ticket mutation was quarantined back to
+its exact authenticated input may reuse the existing one-attempt delivery retry.
+The unchanged clean branch, local and remote heads, receipt, route, passport,
+terminal accounting, and cohort bindings remain mandatory; moved or dirty input
+is refused, and restart reconstructs exhaustion before sibling work begins.
+
+## 2026-08-27 — Decision 623: Operator imports bind exact combined base refreshes
+
+Category: Reliability
+
+Same-release semantic authorization and reviewer-void reconciliation may import
+one passport migration that also advances protected main only when the valid v2
+edge matches the passport's final two authenticated base-history entries. Every
+other caller keeps the unchanged-base invariant, and malformed history remains
+fail-closed before remote validation.
+
+## 2026-08-27 — Decision 624: Shared artifact creation converges safely
+
+Category: Reliability
+
+Concurrent qualification reconciliation may idempotently create the shared
+retained-runs directory. Every caller still revalidates its canonical path,
+owner, directory type, and exact `0700` mode before retaining artifacts;
+symlinks, files, foreign ownership, and unsafe modes remain fail-closed.

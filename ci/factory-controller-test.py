@@ -2045,7 +2045,8 @@ class FactoryControllerTest(unittest.TestCase):
         return controller, claim, cell, passport, transition
 
     def migrate_semantic_wait_passport(
-        self, controller: CONTROL.Controller, claim: dict,
+        self, controller: CONTROL.Controller, claim: dict, *,
+        protected_base: str | None = None,
     ) -> dict:
         path = self.state / f"passports/{claim['ticket']}.json"
         before = controller.authenticated_operator_passport(claim["ticket"])
@@ -2059,6 +2060,7 @@ class FactoryControllerTest(unittest.TestCase):
             ["git", "-C", claim["worktree"], "rev-parse", "HEAD^{tree}"],
             text=True, capture_output=True, check=True,
         ).stdout.strip()
+        target_base = protected_base or before["protected_base_sha"]
         edge = {
             "from_factory_sha": before["factory_sha"],
             "from_head_sha": before["head_sha"],
@@ -2068,7 +2070,7 @@ class FactoryControllerTest(unittest.TestCase):
             "from_route_plan_sha256": before["route_plan_sha256"],
             "schema": PASSPORT.MIGRATION_SCHEMA,
             "to_factory_sha": before["factory_sha"], "to_head_sha": head,
-            "to_protected_base_sha": before["protected_base_sha"],
+            "to_protected_base_sha": target_base,
             "to_route_plan_sha256": before["route_plan_sha256"],
         }
         migrated = PASSPORT.authenticate({
@@ -2080,6 +2082,10 @@ class FactoryControllerTest(unittest.TestCase):
                 }
             },
             "head_sha": head, "head_tree": tree,
+            "base_history": [
+                *before["base_history"],
+                *([] if target_base in before["base_history"] else [target_base]),
+            ],
             "ticket_blob": subprocess.run(
                 [
                     "git", "-C", claim["worktree"], "rev-parse",
@@ -2090,6 +2096,7 @@ class FactoryControllerTest(unittest.TestCase):
             "migration_history": [*before["migration_history"], edge],
             "parent_digest": before["passport_sha256"],
             "parent_file_sha256": parent_file,
+            "protected_base_sha": target_base,
         }, (self.state / "passport.key").read_bytes())
         PASSPORT.write_atomic(path, migrated)
         return migrated
@@ -7325,7 +7332,8 @@ class FactoryControllerTest(unittest.TestCase):
             "kit_sha": controller.release_path.name, "phase": "completed",
             "exit_status": "11",
             "role_branch_before": "ticket/T-110",
-            "role_exit": "role_exit_dirty", "role_head_before": "a" * 40,
+            "role_exit": "role_exit_protected_ticket_mutation",
+            "role_head_before": "a" * 40,
             "role_head_after": "a" * 40,
             "role_remote_before": "a" * 40,
             "role": "builder", "route_plan_sha256": route_digest,
@@ -7417,6 +7425,10 @@ class FactoryControllerTest(unittest.TestCase):
             if CONTROL.read(path)["event"] == "role_delivery_retry"
         ]
         self.assertEqual(len(retries), 1)
+        self.assertEqual(
+            retries[0]["role_exit"],
+            "role_exit_protected_ticket_mutation",
+        )
 
     def test_qualification_latch_blocks_new_claims_and_route_pins(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -18931,7 +18943,8 @@ class FactoryControllerTest(unittest.TestCase):
         route_digest = hashlib.sha256(route.read_bytes()).hexdigest()
         CONTROL.Controller.event(
             controller, "role_delivery_retry", failed["ticket"],
-            input_head=input_head, role="builder", role_exit="role_exit_dirty",
+            input_head=input_head, role="builder",
+            role_exit="role_exit_protected_ticket_mutation",
             run_id="run-1", transition_receipt_sha256=first_receipt,
         )
         self.operator_passport(
@@ -18957,7 +18970,8 @@ class FactoryControllerTest(unittest.TestCase):
             "go_issued": "1", "kit_sha": controller.release_path.name,
             "phase": "completed", "role": "builder",
             "role_branch_before": failed["branch"],
-            "role_exit": "role_exit_dirty", "role_head_after": input_head,
+            "role_exit": "role_exit_protected_ticket_mutation",
+            "role_head_after": input_head,
             "role_head_before": input_head, "role_remote_before": input_head,
             "route_plan_sha256": route_digest, "run_id": "run-2",
             "task_submitted": "1", "ticket": failed["ticket"],
@@ -21835,6 +21849,84 @@ class FactoryControllerTest(unittest.TestCase):
         mismatch.recover_semantic_authorizations([mismatch_claim])
         self.assertEqual(mismatch_claim["status"], "waiting")
 
+    def test_semantic_authorization_import_accepts_exact_base_refresh_only(
+        self,
+    ) -> None:
+        refreshed_base = "b" * 40
+
+        def authorize(
+            controller: CONTROL.Controller, ticket: str,
+        ) -> None:
+            plan = controller.plan_semantic_authorization(
+                ticket, "spec-linter", 3, "operator",
+            )
+            controller.apply_semantic_authorization(
+                ticket, "spec-linter", 3, "operator",
+                plan["approval_hash"],
+            )
+
+        fresh, fresh_claim, _cell, _passport, _transition = (
+            self.semantic_wait_fixture("semantic-base-fresh", "T-248")
+        )
+        authorize(fresh, "T-248")
+        fresh.migrate_passport = lambda _claim, _mode: {
+            "passport": self.migrate_semantic_wait_passport(
+                fresh, fresh_claim, protected_base=refreshed_base,
+            )["passport_sha256"],
+            "status": "ok",
+        }
+        fresh.ensure_lease = lambda *_args: None
+        fresh.remote_passport_valid = lambda _claim: True
+        fresh.recover_semantic_authorizations([fresh_claim])
+        self.assertEqual(fresh_claim["status"], "claimed")
+
+        crash, crash_claim, _cell, _passport, crash_transition = (
+            self.semantic_wait_fixture("semantic-base-restart", "T-249")
+        )
+        authorize(crash, "T-249")
+        migrated = self.migrate_semantic_wait_passport(
+            crash, crash_claim, protected_base=refreshed_base,
+        )
+        self.assertFalse(CONTROL.Controller.operator_import_migration(
+            migrated, crash_transition["head_sha"], migrated["head_sha"],
+            self.release.name, crash_transition["passport_sha256"],
+            crash_transition["route_plan_sha256"],
+        ))
+        restarted = CONTROL.Controller(self.args)
+        restarted.worktrees_by_branch = crash.worktrees_by_branch
+        restarted.migrate_passport = lambda *_args: self.fail(
+            "passport remigrated"
+        )
+        restarted.remote_passport_valid = lambda _claim: True
+        restarted.recover_semantic_authorizations([crash_claim])
+        self.assertEqual(crash_claim["status"], "claimed")
+        before = restarted.claim_path("T-249").read_bytes()
+        restarted.recover_semantic_authorizations([crash_claim])
+        self.assertEqual(restarted.claim_path("T-249").read_bytes(), before)
+
+        invalid, invalid_claim, _cell, _passport, _transition = (
+            self.semantic_wait_fixture("semantic-base-invalid", "T-250")
+        )
+        authorize(invalid, "T-250")
+        migrated = self.migrate_semantic_wait_passport(
+            invalid, invalid_claim, protected_base=refreshed_base,
+        )
+        broken = PASSPORT.authenticate({
+            **{
+                key: value for key, value in migrated.items()
+                if key not in {"authentication_sha256", "passport_sha256"}
+            },
+            "base_history": [refreshed_base],
+        }, (self.state / "passport.key").read_bytes())
+        PASSPORT.write_atomic(
+            self.state / "passports/T-250.json", broken,
+        )
+        invalid.remote_passport_valid = lambda _claim: self.fail(
+            "invalid base lineage reached remote validation"
+        )
+        invalid.recover_semantic_authorizations([invalid_claim])
+        self.assertEqual(invalid_claim["status"], "waiting")
+
     def test_semantic_authorization_plan_apply_pushes_exact_child_once(self) -> None:
         def state_bytes() -> dict[Path, bytes]:
             return {
@@ -23113,6 +23205,76 @@ class FactoryControllerTest(unittest.TestCase):
         ):
             confined.plan_reviewer_void("T-218", 1, "operator")
         self.assertEqual(state_bytes(), confined_state)
+
+    def test_reviewer_void_import_accepts_exact_base_refresh_only(self) -> None:
+        refreshed_base = "b" * 40
+
+        def void(
+            controller: CONTROL.Controller, ticket: str,
+        ) -> None:
+            plan = controller.plan_reviewer_void(ticket, 1, "operator")
+            controller.apply_reviewer_void(
+                ticket, 1, "operator", plan["approval_hash"],
+            )
+
+        fresh, fresh_claim, _cell, _passport, _transition = (
+            self.reviewer_void_fixture("reviewer-base-fresh", "T-221")
+        )
+        void(fresh, "T-221")
+        fresh.migrate_passport = lambda _claim, _mode: {
+            "passport": self.migrate_semantic_wait_passport(
+                fresh, fresh_claim, protected_base=refreshed_base,
+            )["passport_sha256"],
+            "status": "ok",
+        }
+        fresh.remote_passport_valid = lambda _claim: True
+        fresh.recover_reviewer_voids([fresh_claim])
+        self.assertEqual(fresh_claim["status"], "claimed")
+
+        crash, crash_claim, _cell, _passport, _transition = (
+            self.reviewer_void_fixture("reviewer-base-restart", "T-222")
+        )
+        void(crash, "T-222")
+        self.migrate_semantic_wait_passport(
+            crash, crash_claim, protected_base=refreshed_base,
+        )
+        restarted = CONTROL.Controller(self.args)
+        restarted.worktrees_by_branch = crash.worktrees_by_branch
+        restarted.migrate_passport = lambda *_args: self.fail(
+            "passport remigrated"
+        )
+        restarted.remote_passport_valid = lambda _claim: True
+        restarted.recover_reviewer_voids([crash_claim])
+        self.assertEqual(crash_claim["status"], "claimed")
+        before = restarted.claim_path("T-222").read_bytes()
+        restarted.recover_reviewer_voids([crash_claim])
+        self.assertEqual(restarted.claim_path("T-222").read_bytes(), before)
+
+        invalid, invalid_claim, _cell, _passport, _transition = (
+            self.reviewer_void_fixture("reviewer-base-invalid", "T-223")
+        )
+        void(invalid, "T-223")
+        migrated = self.migrate_semantic_wait_passport(
+            invalid, invalid_claim, protected_base=refreshed_base,
+        )
+        broken = PASSPORT.authenticate({
+            **{
+                key: value for key, value in migrated.items()
+                if key not in {"authentication_sha256", "passport_sha256"}
+            },
+            "base_history": [refreshed_base],
+        }, (self.state / "passport.key").read_bytes())
+        PASSPORT.write_atomic(
+            self.state / "passports/T-223.json", broken,
+        )
+        invalid.remote_passport_valid = lambda _claim: self.fail(
+            "invalid base lineage reached remote validation"
+        )
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "reviewer void passport migration is invalid",
+        ):
+            invalid.recover_reviewer_voids([invalid_claim])
+        self.assertEqual(invalid_claim["status"], "blocked")
 
     def test_qualification_reviewer_void_recovery_uses_current_epoch(self) -> None:
         historical = (

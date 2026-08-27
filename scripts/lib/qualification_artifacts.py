@@ -82,7 +82,7 @@ def _read(path: Path, maximum: int, mode: int = 0o600) -> bytes:
 
 def _directory(path: Path, create: bool = False) -> Path:
     if create and not path.exists() and not path.is_symlink():
-        path.mkdir(mode=0o700)
+        path.mkdir(mode=0o700, exist_ok=True)
     info = path.lstat()
     if (
         path.resolve(strict=True) != path

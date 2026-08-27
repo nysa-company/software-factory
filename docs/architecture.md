@@ -1708,11 +1708,16 @@ unchanged remote input. A successor may reopen only that role after the signed
 passport contains the failed charge once and no completion. Legacy releases
 that left the rejected head checked out additionally require the existing
 protected in-flight rewrite authorization before passport migration can move
-back to the unchanged remote input. Same-release retry and acceptance of the
-protected mutation remain forbidden. If later successors have already migrated
-that passport, recovery additionally requires one continuous authenticated v2
-suffix from the failed role input to the current passport, with every
-head-changing edge revalidated as an exact Factory route-migration commit.
+back to the unchanged remote input. Qualification may retry that same release
+exactly once only when the existing delivery-retry boundary proves the terminal
+was accounted and the branch, local head, remote head, receipt, route, passport,
+and clean worktree all match the restored role input. The protected mutation is
+never accepted, an unrestored or moved input remains fail-closed, and a second
+delivery failure on that input exhausts the retry. If later successors have
+already migrated that passport, recovery additionally requires one continuous
+authenticated v2 suffix from the failed role input to the current passport,
+with every head-changing edge revalidated as an exact Factory route-migration
+commit.
 An otherwise valid submitted Planner, Spec-linter, Test-author, Builder, or
 Narrator terminal that fails with dirty output is reconciled before passport
 export. The controller validates the exact terminal, receipt, input/output
