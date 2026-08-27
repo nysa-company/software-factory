@@ -11609,6 +11609,147 @@ class Controller:
             and self.remote_passport_valid(claim)
         )
 
+    def prior_release_protected_mutation_terminal(
+        self, claim: dict[str, Any], terminal: dict[str, str],
+    ) -> bool:
+        input_head = terminal.get("role_head_before", "")
+        completed = terminal.get("accounting_state") == "completed"
+        return bool(
+            terminal.get("phase") == "completed"
+            and terminal.get("go_issued") == "1"
+            and terminal.get("task_submitted") == "1"
+            and terminal.get("exit_status") == "11"
+            and terminal.get("role_exit")
+            == "role_exit_protected_ticket_mutation"
+            and terminal.get("ticket") == claim.get("ticket")
+            and terminal.get("role") == claim.get("role")
+            and claim.get("role") in {
+                "planner", "spec-linter", "builder", "narrator",
+            }
+            and terminal.get("role_branch_before") == claim.get("branch")
+            and terminal.get("role_remote_before") == input_head
+            and terminal.get("transition_receipt_sha256")
+            == claim.get("receipt")
+            and DIGEST.fullmatch(claim.get("receipt", ""))
+            and SHA.fullmatch(input_head)
+            and SHA.fullmatch(terminal.get("kit_sha", ""))
+            and terminal["kit_sha"] != self.release_path.name
+            and terminal.get("contract_version") in CONTROLLER_CONTRACTS
+            and re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+                terminal.get("run_id", ""),
+            )
+            and (
+                terminal.get("accounting_state") == "abandoned_conservative"
+                and terminal.get("cost_basis") == "conservative_reservation"
+                and re.fullmatch(
+                    r"(?:0|[1-9][0-9]{0,6})(?:\.[0-9]{1,18})?",
+                    terminal.get("reserved_usd", ""),
+                )
+                and int(terminal["reserved_usd"].replace(".", "")) > 0
+                and terminal.get("effective_cost")
+                == terminal.get("reserved_usd")
+                or completed
+                and bool(terminal.get("cost_basis"))
+                and re.fullmatch(
+                    r"(?:0|[1-9][0-9]{0,6})(?:\.[0-9]{1,18})?",
+                    terminal.get("effective_cost", ""),
+                )
+                and terminal.get("terminal_intent_accounting_state")
+                == "completed"
+                and terminal.get("terminal_intent_phase") == "completed"
+                and terminal.get("terminal_intent_result") == "failed"
+                and re.fullmatch(
+                    r"(?:0|[1-9][0-9]{0,18})",
+                    terminal.get("terminal_intent_charge_micro_usd", ""),
+                )
+                and SHA.fullmatch(terminal.get("role_head_after", ""))
+                and terminal.get("role_head_after") != input_head
+            )
+        )
+
+    def completed_protected_mutation_contained(
+        self, claim: dict[str, Any], terminal: dict[str, str],
+    ) -> bool:
+        if (
+            terminal.get("accounting_state") != "completed"
+            or not self.prior_release_protected_mutation_terminal(claim, terminal)
+        ):
+            return False
+        run_id = terminal["run_id"]
+        receipt = claim["receipt"]
+        role = claim["role"]
+        input_head = terminal["role_head_before"]
+        output_head = terminal["role_head_after"]
+        try:
+            passport = self.authenticated_operator_passport(claim["ticket"])
+            inventory = self.ticket_run_inventory(claim["ticket"])
+            diagnostic = self.cell_git(
+                claim, "rev-parse", "--verify",
+                f"refs/factory/failed-role/{claim['ticket']}/{run_id}",
+            )
+            output_type = self.cell_git(
+                claim, "cat-file", "-t", output_head,
+            )
+            ancestor = self.cell_git(
+                claim, "merge-base", "--is-ancestor", input_head, output_head,
+            )
+        except (
+            ControllerError, json.JSONDecodeError, OSError,
+            subprocess.SubprocessError, UnicodeError,
+        ):
+            return False
+        if (
+            passport is None
+            or not isinstance(passport.get("charge_records"), list)
+            or not isinstance(passport.get("completed_role_evidence"), list)
+        ):
+            return False
+        expected = (run_id, role, receipt)
+        charges = [
+            item for item in passport.get("charge_records", [])
+            if isinstance(item, dict)
+            and (
+                item.get("run_id"), item.get("role"),
+                item.get("transition_receipt_sha256"),
+            ) == expected
+        ]
+        completed = [
+            item for item in passport.get("completed_role_evidence", [])
+            if isinstance(item, dict)
+            and (
+                item.get("run_id"), item.get("role"),
+                item.get("transition_receipt_sha256"),
+            ) == expected
+        ]
+        manifests = [
+            digest for name, digest in inventory
+            if name == f"{run_id}.meta"
+        ]
+        charge = charges[0] if len(charges) == 1 else {}
+        return bool(
+            passport.get("ticket") == claim["ticket"]
+            and passport.get("branch") == claim["branch"]
+            and passport.get("transition_receipt_sha256") == receipt
+            and len(completed) == 0
+            and len(manifests) == 1
+            and charge.get("accounting_state") == "completed"
+            and charge.get("factory_sha") == terminal.get("kit_sha")
+            and charge.get("contract_version")
+            == terminal.get("contract_version")
+            and charge.get("head_before") == input_head
+            and charge.get("manifest_sha256") == manifests[0]
+            and isinstance(charge.get("charge_micro_usd"), int)
+            and not isinstance(charge.get("charge_micro_usd"), bool)
+            and charge["charge_micro_usd"]
+            == int(terminal["terminal_intent_charge_micro_usd"])
+            and diagnostic.returncode == 0
+            and diagnostic.stdout.strip() == output_head
+            and output_type.returncode == 0
+            and output_type.stdout.strip() == "commit"
+            and ancestor.returncode == 0
+        )
+
     def quarantine_dirty_role_output(
         self, claim: dict[str, Any], terminal: dict[str, str],
     ) -> None:
@@ -12128,9 +12269,15 @@ class Controller:
                 and terminal.get("role_exit") == "role_exit_history_rewritten"
             )
             protected_mutation = (
-                quarantined_role_failure
-                and terminal.get("role_exit")
-                == "role_exit_protected_ticket_mutation"
+                (
+                    quarantined_role_failure
+                    and terminal.get("role_exit")
+                    == "role_exit_protected_ticket_mutation"
+                )
+                or (
+                    terminal is not None
+                    and self.completed_protected_mutation_contained(claim, terminal)
+                )
             )
             interrupted_before_submission = (
                 terminal is not None
@@ -14632,6 +14779,19 @@ class Controller:
                 )
                 if (
                     terminal is None
+                    or (
+                        terminal.get("role_exit")
+                        == "role_exit_protected_ticket_mutation"
+                        and self.prior_release_protected_mutation_terminal(
+                            claim, terminal,
+                        )
+                        and (
+                            terminal.get("accounting_state") != "completed"
+                            or self.completed_protected_mutation_contained(
+                                claim, terminal,
+                            )
+                        )
+                    )
                     or terminal.get("role_exit")
                     not in QUALIFICATION_DELIVERY_RETRY_EXITS
                 ):

@@ -13828,6 +13828,186 @@ class FactoryControllerTest(unittest.TestCase):
             ("claimed", "", ""),
         )
 
+        provider_terminal = {
+            **terminal,
+            "accounting_state": "completed",
+            "contract_version": "2.0.0",
+            "cost_basis": "provider_reported",
+            "effective_cost": "0.5958758",
+            "role_head_after": output_head,
+            "terminal_intent_accounting_state": "completed",
+            "terminal_intent_charge_micro_usd": "595876",
+            "terminal_intent_phase": "completed",
+            "terminal_intent_result": "failed",
+            "ticket": claim["ticket"],
+            "transition_receipt_sha256": receipt,
+        }
+        manifest = self.product / f"factory/runs/{run_id}.meta"
+        manifest.write_text("".join(
+            f"{key}={value}\n" for key, value in provider_terminal.items()
+        ), encoding="utf-8")
+        manifest_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        key = self.state / "passport.key"
+        key.write_bytes(b"k" * 32)
+        key.chmod(0o600)
+
+        def write_provider_passport(
+            charge_micro_usd: int = 595876, **changes,
+        ) -> None:
+            passport = {
+                "branch": claim["branch"],
+                "charge_records": [{
+                    "accounting_state": "completed",
+                    "charge_micro_usd": charge_micro_usd,
+                    "contract_version": "2.0.0",
+                    "factory_sha": predecessor,
+                    "head_before": input_head,
+                    "manifest_sha256": manifest_digest,
+                    "role": claim["role"],
+                    "run_id": run_id,
+                    "transition_receipt_sha256": receipt,
+                }],
+                "completed_role_evidence": [],
+                "contract_version": "2.0.0",
+                "factory_sha": self.release.name,
+                "head_sha": input_head,
+                "project": "relay",
+                "publication_state": "none",
+                "schema": "nysa.software-factory.ticket-passport/v1",
+                "ticket": claim["ticket"],
+                "transition_receipt_sha256": receipt,
+                **changes,
+            }
+            PASSPORT.write_atomic(
+                passport_path, PASSPORT.authenticate(passport, key.read_bytes()),
+            )
+
+        claim.update(receipt=receipt, role="spec-linter", status="blocked")
+        write_provider_passport()
+        self.assertTrue(controller.completed_protected_mutation_contained(
+            claim, provider_terminal,
+        ))
+
+        for basis in ("estimated_tokens", "test_fixture"):
+            alternate = {**provider_terminal, "cost_basis": basis}
+            manifest.write_text("".join(
+                f"{key}={value}\n" for key, value in alternate.items()
+            ), encoding="utf-8")
+            manifest_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+            write_provider_passport()
+            self.assertTrue(controller.completed_protected_mutation_contained(
+                claim, alternate,
+            ))
+
+        zero_charge = {
+            **provider_terminal,
+            "cost_basis": "test_fixture",
+            "effective_cost": "0",
+            "terminal_intent_charge_micro_usd": "0",
+        }
+        manifest.write_text("".join(
+            f"{key}={value}\n" for key, value in zero_charge.items()
+        ), encoding="utf-8")
+        manifest_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        write_provider_passport(0)
+        self.assertTrue(controller.completed_protected_mutation_contained(
+            claim, zero_charge,
+        ))
+
+        manifest.write_text("".join(
+            f"{key}={value}\n" for key, value in provider_terminal.items()
+        ), encoding="utf-8")
+        manifest_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        write_provider_passport()
+
+        subprocess.run([
+            "git", "-C", str(cell), "update-ref",
+            f"refs/factory/failed-role/T-110/{run_id}", input_head, output_head,
+        ], check=True)
+        self.assertFalse(controller.completed_protected_mutation_contained(
+            claim, provider_terminal,
+        ))
+        subprocess.run([
+            "git", "-C", str(cell), "update-ref",
+            f"refs/factory/failed-role/T-110/{run_id}", output_head, input_head,
+        ], check=True)
+
+        subprocess.run([
+            "git", "-C", str(cell), "tag", "-a", "diagnostic-tag",
+            "-m", "diagnostic tag", output_head,
+        ], check=True)
+        tag_object = subprocess.run([
+            "git", "-C", str(cell), "rev-parse", "refs/tags/diagnostic-tag",
+        ], text=True, capture_output=True, check=True).stdout.strip()
+        subprocess.run([
+            "git", "-C", str(cell), "update-ref",
+            f"refs/factory/failed-role/T-110/{run_id}", tag_object, output_head,
+        ], check=True)
+        self.assertFalse(controller.completed_protected_mutation_contained(
+            claim, provider_terminal,
+        ))
+
+        tagged_terminal = {**provider_terminal, "role_head_after": tag_object}
+        manifest.write_text("".join(
+            f"{key}={value}\n" for key, value in tagged_terminal.items()
+        ), encoding="utf-8")
+        manifest_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        write_provider_passport()
+        self.assertFalse(controller.completed_protected_mutation_contained(
+            claim, tagged_terminal,
+        ))
+
+        manifest.write_text("".join(
+            f"{key}={value}\n" for key, value in provider_terminal.items()
+        ), encoding="utf-8")
+        manifest_digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        write_provider_passport()
+        subprocess.run([
+            "git", "-C", str(cell), "update-ref",
+            f"refs/factory/failed-role/T-110/{run_id}", output_head, tag_object,
+        ], check=True)
+
+        unrelated = subprocess.run(
+            ["git", "-C", str(cell), "commit-tree", f"{input_head}^{{tree}}"],
+            input="unrelated output\n", text=True, capture_output=True,
+            check=True,
+        ).stdout.strip()
+        subprocess.run([
+            "git", "-C", str(cell), "update-ref",
+            f"refs/factory/failed-role/T-110/{run_id}", unrelated, output_head,
+        ], check=True)
+        self.assertFalse(controller.completed_protected_mutation_contained(
+            claim, {**provider_terminal, "role_head_after": unrelated},
+        ))
+        subprocess.run([
+            "git", "-C", str(cell), "update-ref",
+            f"refs/factory/failed-role/T-110/{run_id}", output_head, unrelated,
+        ], check=True)
+
+        write_provider_passport(charge_records=[])
+        self.assertFalse(controller.completed_protected_mutation_contained(
+            claim, provider_terminal,
+        ))
+        write_provider_passport(charge_records=None)
+        self.assertFalse(controller.completed_protected_mutation_contained(
+            claim, provider_terminal,
+        ))
+        write_provider_passport(completed_role_evidence=[{
+            "role": claim["role"], "run_id": run_id,
+            "transition_receipt_sha256": receipt,
+        }])
+        self.assertFalse(controller.completed_protected_mutation_contained(
+            claim, provider_terminal,
+        ))
+
+        write_provider_passport()
+        controller.terminal_for_receipt = lambda *_args: provider_terminal
+        controller.recover_repaired_failures([claim])
+        self.assertEqual(
+            (claim["status"], claim["receipt"], claim["role"]),
+            ("claimed", "", ""),
+        )
+
         state_args = argparse.Namespace(workdir=cell, ticket="T-110")
         stage, loop = STATE.govern_loop(state_args, "RUN spec-linter", False)
         self.assertEqual(
@@ -19138,6 +19318,95 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(quarantines, ["run-1"])
         self.assertEqual(len(retries), 1)
         self.assertEqual(retries[0]["run_id"], "run-1")
+
+    def test_qualification_restart_routes_old_delivery_failure_to_upgrade(
+        self,
+    ) -> None:
+        self.args.wait_seconds = 30
+        controller, claims = self.scheduler_fixture("T-110")
+        claim = claims[0]
+        claim.update(receipt="b" * 64, role="builder", status="blocked")
+        input_head = "d" * 40
+        terminal = {
+            "accounting_state": "completed",
+            "contract_version": "2.0.0",
+            "cost_basis": "estimated_tokens",
+            "effective_cost": "0",
+            "exit_status": "11",
+            "go_issued": "1",
+            "kit_sha": "c" * 40,
+            "phase": "completed",
+            "role": claim["role"],
+            "role_branch_before": claim["branch"],
+            "role_exit": "role_exit_protected_ticket_mutation",
+            "role_head_after": "e" * 40,
+            "role_head_before": input_head,
+            "role_remote_before": input_head,
+            "run_id": "old-protected-mutation",
+            "task_submitted": "1",
+            "terminal_intent_accounting_state": "completed",
+            "terminal_intent_charge_micro_usd": "0",
+            "terminal_intent_phase": "completed",
+            "terminal_intent_result": "failed",
+            "ticket": claim["ticket"],
+            "transition_receipt_sha256": claim["receipt"],
+        }
+        self.assertTrue(
+            controller.prior_release_protected_mutation_terminal(claim, terminal)
+        )
+        self.assertFalse(controller.prior_release_protected_mutation_terminal(
+            claim, {**terminal, "kit_sha": controller.release_path.name},
+        ))
+        self.assertFalse(controller.prior_release_protected_mutation_terminal(
+            claim, {**terminal, "kit_sha": "bad"},
+        ))
+        self.assertFalse(controller.prior_release_protected_mutation_terminal(
+            claim, {**terminal, "contract_version": "bad"},
+        ))
+        controller.role_active = lambda _claim: False
+        controller.terminal_for_receipt = lambda *_args: terminal
+        controller.completed_protected_mutation_contained = (
+            lambda *_args: True
+        )
+        retry_calls = []
+        controller.qualification_delivery_retry = lambda item, _terminal: (
+            retry_calls.append(item["ticket"]) or ("unavailable", "")
+        )
+        upgrade_calls = []
+
+        def recover(items):
+            for item in items:
+                if item.get("receipt"):
+                    upgrade_calls.append(item["ticket"])
+                    item.update(receipt="", role="", status="claimed")
+
+        controller.recover_upgraded_claims = recover
+        controller.release_inactive_ticket_leases = lambda _claims: None
+        controller.reconcile_ticket_until_wait = lambda item: {
+            "status": "waiting", "ticket": item["ticket"],
+        }
+
+        controller.reconcile()
+
+        self.assertFalse(controller.qualification_stopped())
+        self.assertEqual(retry_calls, [])
+        self.assertEqual(upgrade_calls, ["T-110"])
+
+        claim.update(receipt="b" * 64, role="builder", status="blocked")
+        controller.completed_protected_mutation_contained = (
+            lambda *_args: False
+        )
+        controller.cell_git = lambda *_args: argparse.Namespace(
+            returncode=0, stderr="", stdout="",
+        )
+        retry_calls.clear()
+        upgrade_calls.clear()
+
+        controller.reconcile()
+
+        self.assertTrue(controller.qualification_stopped())
+        self.assertEqual(retry_calls, ["T-110"])
+        self.assertEqual(upgrade_calls, [])
 
     def test_qualification_restart_does_not_authorize_retry_after_latch(
         self,
