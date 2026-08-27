@@ -411,8 +411,8 @@ everything the Factory actually enforces lives here.
   failure releases the lease, while only a pass reopens ordinary execution.
 - A signed completed Planner repair retains narrow catch-up authority while
   its reopened test-first epoch follows the exact alternating
-  Planner/Spec-linter prefix beneath Building or Review. A verified uncapped
-  Spec-linter FAIL receipt may derive launcher-only `CATCHUP planner`
+  Planner/Spec-linter prefix beneath Building or Review. A verified first or
+  later uncapped Spec-linter FAIL receipt may derive launcher-only `CATCHUP planner`
   admission; ordinary, stale, malformed, reordered, or capped receipts remain
   closed, no ticket state is rewound, and no general bypass exists.
 - A tests-first epoch begins only in a ticket-only commit with one higher
@@ -8393,3 +8393,12 @@ Ticket-PR lineage accepts a post-review route-only suffix containing fallback
 or release-migration revisions after the sealed model manager validates the
 complete hash chain. Broken hashes, unknown revision kinds, changed prefixes,
 and every post-review product or sibling path remain refused.
+
+## 2026-08-27 — Decision 621: First post-review replan carries catch-up proof
+
+Category: Reliability
+
+The first authenticated Spec-linter FAIL in a post-Reviewer repair epoch
+records `planner-spec-linter` attempt-one metadata on its Planner receipt.
+Preflight can therefore derive the existing narrow `CATCHUP planner` admission;
+ordinary Planner work, malformed role history, and capped rounds remain closed.
