@@ -318,8 +318,10 @@ During a long successor role, the controller renews every
 idle cohort lease and releases a parked lease instead of allowing either to
 expire. A parked semantic-round wait remains plannable without a lease; exact
 apply reacquires that lease before its ticket-only authorization commit. The
-resulting import binds the exact transition passport, unchanged Factory/base/route,
-ticket-only grant commit, and current remote head; ordinary role commits between
+resulting import binds the exact transition passport, unchanged Factory/route,
+ticket-only grant commit, and current remote head. It accepts a protected-base
+refresh only when the same valid v2 migration edge records the final two exact
+authenticated base-history entries; ordinary role commits between
 older passport snapshots need not appear as migration edges. A warning
 from the manifest's exact source release may cover any selected subset; a
 warning from an older prior candidate is accepted only when it covers the full

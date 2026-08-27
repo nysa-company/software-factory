@@ -10865,9 +10865,11 @@ class Controller:
     def operator_import_migration(
         passport: dict[str, Any], source: str, target: str, factory_sha: str,
         source_file_sha256: str, route_plan_sha256: str,
+        *, allow_protected_base_refresh: bool = False,
     ) -> bool:
         history = passport.get("migration_history")
         edge = history[-1] if isinstance(history, list) and history else {}
+        base_history = passport.get("base_history")
         return (
             isinstance(edge, dict)
             and edge.get("schema") == PASSPORT_MIGRATION_SCHEMA
@@ -10877,9 +10879,20 @@ class Controller:
             == factory_sha
             and edge.get("from_head_sha") == source
             and edge.get("to_head_sha") == passport.get("head_sha") == target
-            and edge.get("from_protected_base_sha")
-            == edge.get("to_protected_base_sha")
-            == passport.get("protected_base_sha")
+            and (
+                edge.get("from_protected_base_sha")
+                == edge.get("to_protected_base_sha")
+                == passport.get("protected_base_sha")
+                or allow_protected_base_refresh
+                and valid_v2_migration(edge)
+                and isinstance(base_history, list)
+                and base_history[-2:] == [
+                    edge.get("from_protected_base_sha"),
+                    edge.get("to_protected_base_sha"),
+                ]
+                and edge.get("to_protected_base_sha")
+                == passport.get("protected_base_sha")
+            )
             and edge.get("from_route_plan_sha256")
             == edge.get("to_route_plan_sha256")
             == passport.get("route_plan_sha256")
@@ -11266,6 +11279,7 @@ class Controller:
                         self.release_path.name,
                         transition.get("passport_sha256", ""),
                         transition.get("route_plan_sha256", ""),
+                        allow_protected_base_refresh=True,
                     )
                     or not self.remote_passport_valid(claim)
                 ):
@@ -11315,6 +11329,7 @@ class Controller:
                     self.release_path.name,
                     transition.get("passport_sha256", ""),
                     transition.get("route_plan_sha256", ""),
+                    allow_protected_base_refresh=True,
                 )
                 or not self.remote_passport_valid(claim)
             ):
@@ -11479,6 +11494,7 @@ class Controller:
                     passport, parent, local, self.release_path.name,
                     transition.get("passport_sha256", ""),
                     transition.get("route_plan_sha256", ""),
+                    allow_protected_base_refresh=True,
                 )
                 or not self.remote_passport_valid(claim)
             ):
