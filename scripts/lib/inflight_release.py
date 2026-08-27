@@ -169,7 +169,8 @@ def authorize_ticket(
 
 def _git(repo: pathlib.Path, *args: str, text: bool = True):
     result = subprocess.run(
-        ["git", "-C", str(repo), *args], capture_output=True, text=text,
+        ["git", "-C", str(repo), "--no-replace-objects", *args],
+        capture_output=True, text=text,
     )
     if result.returncode:
         raise AuthorizationError("in-flight release authorization Git evidence is missing")
