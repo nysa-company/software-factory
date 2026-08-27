@@ -36,6 +36,8 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 CONTROL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CONTROL)
+from qualification_release import ReceiptError, role_control_epoch  # noqa: E402
+from ticket_state_transition import qualification_epoch_text  # noqa: E402
 
 QUALIFICATION_SPEC = importlib.util.spec_from_file_location(
     "qualification_run_for_controller_test", ROOT / "scripts/qualification-run.py"
@@ -1563,12 +1565,51 @@ class FactoryControllerTest(unittest.TestCase):
         controller = CONTROL.Controller(self.args)
         controller.release_path = release
 
-        def receipt(kit_sha: str, previous: str | None, project: str = "relay") -> str:
+        ticket_path = self.product / "factory/tickets/T-110.md"
+        ticket_path.parent.mkdir(parents=True)
+        ticket_path.write_text("State: Building\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", "-b", "main", self.product], check=True)
+        subprocess.run(["git", "-C", self.product, "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", self.product, "-c", "user.name=Factory",
+            "-c", "user.email=factory@example.invalid", "commit", "-qm", "origin",
+        ], check=True)
+        original_product = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            capture_output=True, check=True, text=True,
+        ).stdout.strip()
+        original_tree = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD^{tree}"],
+            capture_output=True, check=True, text=True,
+        ).stdout.strip()
+        current_text = "State: Building\nSPEC-LINT: PASS\n"
+        ticket_path.write_text(current_text, encoding="utf-8")
+        subprocess.run(["git", "-C", self.product, "add", str(ticket_path)], check=True)
+        subprocess.run([
+            "git", "-C", self.product, "-c", "user.name=Factory",
+            "-c", "user.email=factory@example.invalid", "commit", "-qm", "successor",
+        ], check=True)
+        current_product = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD"],
+            capture_output=True, check=True, text=True,
+        ).stdout.strip()
+        current_tree = subprocess.run(
+            ["git", "-C", self.product, "rev-parse", "HEAD^{tree}"],
+            capture_output=True, check=True, text=True,
+        ).stdout.strip()
+
+        def receipt(
+            kit_sha: str, previous: str | None, product_sha: str,
+            product_tree: str, project: str = "relay",
+        ) -> str:
             value = {
                 "contract_version": "1.8.0",
                 "kit_sha": kit_sha,
                 "kit_tree": "1" * 40,
+                "product_origin": "https://example.invalid/product.git",
                 "product_path": str(self.product),
+                "product_sha": product_sha,
+                "product_tree": product_tree,
                 "project": project,
                 "provider_policy_sha256": "2" * 64,
                 "qualification_mode": "isolated",
@@ -1583,11 +1624,16 @@ class FactoryControllerTest(unittest.TestCase):
             CONTROL.write(receipts / f"{receipt_id}.json", value)
             return receipt_id
 
-        prior_receipt = receipt(prior, None)
-        current_receipt = receipt(current, prior_receipt)
+        prior_receipt = receipt(prior, None, original_product, original_tree)
+        current_receipt = receipt(
+            current, prior_receipt, current_product, current_tree,
+        )
         active_path = projects / "relay/active.json"
         CONTROL.write(active_path, {
             "kit_sha": current,
+            "product_path": str(self.product),
+            "product_sha": current_product,
+            "product_tree": current_tree,
             "project": "relay",
             "receipt_id": current_receipt,
             "release_path": str(release),
@@ -1595,6 +1641,53 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(controller.qualification_release_receipts(), {
             current: current_receipt,
             prior: prior_receipt,
+        })
+        self.assertEqual(
+            role_control_epoch(
+                release, "relay", self.product, current_receipt,
+                current_product, current_tree,
+            ),
+            (original_product, original_tree),
+        )
+        with patch.dict(os.environ, {
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_MODE": "isolated",
+            "FACTORY_QUALIFICATION_RECEIPT_ID": current_receipt,
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": current_product,
+            "FACTORY_QUALIFICATION_PRODUCT_TREE": current_tree,
+            "FACTORY_RELEASE_PATH": str(release),
+            "FACTORY_PROJECT": "relay",
+            "FACTORY_ROOT": str(self.product),
+        }, clear=True):
+            self.assertEqual(
+                qualification_epoch_text(self.product, "T-110", current_text),
+                current_text,
+            )
+        swapped_active = CONTROL.read(active_path)
+        swapped_active["receipt_id"] = "f" * 64
+        CONTROL.write(active_path, swapped_active)
+        self.assertEqual(
+            role_control_epoch(
+                release, "relay", self.product, current_receipt,
+                current_product, current_tree,
+            ),
+            (original_product, original_tree),
+        )
+        with self.assertRaisesRegex(
+            ReceiptError, "qualification release activation is invalid",
+        ):
+            role_control_epoch(
+                release, "relay", self.product, current_receipt,
+                "f" * 40, current_tree,
+            )
+        CONTROL.write(active_path, {
+            "kit_sha": current,
+            "product_path": str(self.product),
+            "product_sha": current_product,
+            "product_tree": current_tree,
+            "project": "relay",
+            "receipt_id": current_receipt,
+            "release_path": str(release),
         })
 
         changed = CONTROL.read(receipts / f"{prior_receipt}.json")
@@ -1605,10 +1698,17 @@ class FactoryControllerTest(unittest.TestCase):
         ):
             controller.qualification_release_receipts()
 
-        foreign_receipt = receipt(prior, None, "other")
-        current_receipt = receipt(current, foreign_receipt)
+        foreign_receipt = receipt(
+            prior, None, original_product, original_tree, "other",
+        )
+        current_receipt = receipt(
+            current, foreign_receipt, current_product, current_tree,
+        )
         CONTROL.write(active_path, {
             "kit_sha": current,
+            "product_path": str(self.product),
+            "product_sha": current_product,
+            "product_tree": current_tree,
             "project": "relay",
             "receipt_id": current_receipt,
             "release_path": str(release),
@@ -1617,6 +1717,62 @@ class FactoryControllerTest(unittest.TestCase):
             CONTROL.ControllerError, "qualification release receipt is invalid",
         ):
             controller.qualification_release_receipts()
+
+        bad_prior = receipt(
+            prior, None, original_product, "f" * 40,
+        )
+        current_receipt = receipt(
+            current, bad_prior, current_product, current_tree,
+        )
+        CONTROL.write(active_path, {
+            "kit_sha": current,
+            "product_path": str(self.product),
+            "product_sha": current_product,
+            "product_tree": current_tree,
+            "project": "relay",
+            "receipt_id": current_receipt,
+            "release_path": str(release),
+        })
+        with self.assertRaisesRegex(
+            ReceiptError, "qualification release product history is invalid",
+        ):
+            role_control_epoch(
+                release, "relay", self.product, current_receipt,
+                current_product, current_tree,
+            )
+
+        orphan = subprocess.run([
+            "git", "-C", self.product, "-c", "user.name=Factory",
+            "-c", "user.email=factory@example.invalid", "commit-tree",
+            original_tree,
+        ], input="orphan\n", capture_output=True, check=True, text=True).stdout.strip()
+        orphan_receipt = receipt(
+            prior, None, orphan, original_tree,
+        )
+        current_receipt = receipt(
+            current, orphan_receipt, current_product, current_tree,
+        )
+        with self.assertRaisesRegex(
+            ReceiptError, "qualification release product history is invalid",
+        ):
+            role_control_epoch(
+                release, "relay", self.product, current_receipt,
+                current_product, current_tree,
+            )
+
+        tree_prior = receipt(
+            prior, None, original_tree, original_tree,
+        )
+        current_receipt = receipt(
+            current, tree_prior, current_product, current_tree,
+        )
+        with self.assertRaisesRegex(
+            ReceiptError, "qualification release product history is invalid",
+        ):
+            role_control_epoch(
+                release, "relay", self.product, current_receipt,
+                current_product, current_tree,
+            )
 
     def test_qualification_plain_done_without_protected_terminal_refuses(self) -> None:
         tickets = [f"T-{number}" for number in range(110, 114)]
@@ -22396,6 +22552,7 @@ class FactoryControllerTest(unittest.TestCase):
         ).stdout.strip()
         with patch.dict(os.environ, {
             "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_MODE": "takeover",
             "FACTORY_QUALIFICATION_PRODUCT_SHA": baseline,
         }):
             controller, _claim, cell, _passport, _transition = (
@@ -23572,6 +23729,7 @@ class FactoryControllerTest(unittest.TestCase):
 
         with patch.dict(os.environ, {
             "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_MODE": "takeover",
             "FACTORY_QUALIFICATION_PRODUCT_SHA": baseline,
         }):
             for ticket, migrated in (("T-219", False), ("T-220", True)):

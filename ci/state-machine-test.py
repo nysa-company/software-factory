@@ -572,6 +572,7 @@ class StateMachineTest(unittest.TestCase):
         )
         with mock.patch.dict(os.environ, {
             "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_MODE": "takeover",
             "FACTORY_QUALIFICATION_PRODUCT_SHA": baseline,
         }):
             ticket.write_text(historical + fresh, encoding="utf-8")
@@ -1403,6 +1404,7 @@ class StateMachineTest(unittest.TestCase):
         ]
         with mock.patch.dict(os.environ, {
             "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_MODE": "takeover",
             "FACTORY_QUALIFICATION_PRODUCT_SHA": baseline,
         }), mock.patch.object(
             STATE, "authenticated_role_evidence", return_value=({}, completed),

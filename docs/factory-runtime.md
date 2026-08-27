@@ -223,12 +223,15 @@ SHA; unrelated local commits, dirty paths, or a changed remote remain blocked.
 When a later generation reauthorizes that Ready head, preparation and dispatch
 recursively validate every prior Ready epoch and canonical reset pair before
 repeating the same exact-head recovery.
-Role-control evidence that predates the sealed qualification product SHA is
-history, not evidence for the candidate run. The launcher binds that SHA and
-the shared sequencer, controller, state machine, Reviewer reconciliation,
-attestation, and qualification rollback paths all use the same read-only epoch
-projection. Protected controls must remain an exact ordered prefix; missing,
-rewritten, reordered, or interposed history blocks without editing the ticket.
+Role-control evidence that predates the first authenticated activation receipt
+is history, not evidence for the candidate run. The hash-linked receipt chain
+keeps that epoch immutable when a successor advances the current protected
+product SHA. The shared sequencer, controller, state machine, Reviewer
+reconciliation, attestation, and qualification rollback paths all use the same
+read-only projection. Every receipt product SHA/tree must remain available and
+exact; a missing, changed, cyclic, or inconsistent chain blocks without editing
+the ticket. Protected controls must remain an exact ordered prefix; missing,
+rewritten, reordered, or interposed history also blocks.
 
 After preparation, one sealed command owns deterministic progress to the next
 authenticated boundary:

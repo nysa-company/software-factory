@@ -1030,6 +1030,7 @@ else:
         command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
         self.env.update({
             "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_MODE": "takeover",
             "FACTORY_QUALIFICATION_PRODUCT_SHA": baseline,
         })
 
@@ -1606,6 +1607,7 @@ else:
         command("git", "push", "-q", "origin", "ticket/T-700", cwd=self.product)
         self.env.update({
             "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_MODE": "takeover",
             "FACTORY_QUALIFICATION_PRODUCT_SHA": baseline,
         })
         self.bundle()

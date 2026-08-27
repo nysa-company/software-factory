@@ -3242,6 +3242,7 @@ ledger_header > "$QUALIFICATION_EPOCH/factory/ledger.csv"
 init_product_git "$QUALIFICATION_EPOCH"
 QUALIFICATION_EPOCH_SHA="$(git -C "$QUALIFICATION_EPOCH" rev-parse HEAD)"
 export FACTORY_KIT_TRUST_SCOPE=qualification-candidate
+export FACTORY_QUALIFICATION_MODE=takeover
 export FACTORY_QUALIFICATION_PRODUCT_SHA="$QUALIFICATION_EPOCH_SHA"
 ledger_row T-306 planner >> "$QUALIFICATION_EPOCH/factory/ledger.csv"
 TEST_CONTRACT_VERSION=2.0.0 expect_stage "RUN spec-linter" \
@@ -3308,7 +3309,8 @@ if TEST_CONTRACT_VERSION=2.0.0 expect_stage "RUN narrator" \
   "$QUALIFICATION_EPOCH" T-305; then
   pass "qualification role-control epoch ignores protected history"
 fi
-unset FACTORY_KIT_TRUST_SCOPE FACTORY_QUALIFICATION_PRODUCT_SHA
+unset FACTORY_KIT_TRUST_SCOPE FACTORY_QUALIFICATION_MODE \
+  FACTORY_QUALIFICATION_PRODUCT_SHA
 
 # Missing verdict still refuses unless the extra row has a void note.
 grep -v 'OPERATOR NOTE' "$ROUNDS/factory/tickets/T-300.md" > "$ROUNDS/factory/tickets/T-300.tmp"

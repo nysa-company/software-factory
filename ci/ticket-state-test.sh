@@ -431,6 +431,7 @@ printf '%s\n' \
   'started_at=2026-07-27T00:01:00Z' \
   > "$PRODUCT/factory/runs/reviewer-2.meta"
 FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+FACTORY_QUALIFICATION_MODE=takeover \
 FACTORY_QUALIFICATION_PRODUCT_SHA="$QUALIFICATION_REVIEW_BASE" \
   TEST_CONTRACT=2.0.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
   --action reviewer-reconcile >/dev/null
@@ -583,6 +584,7 @@ git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
   commit -qm "qualification historical failure fixture"
 git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
 if FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+    FACTORY_QUALIFICATION_MODE=takeover \
     FACTORY_QUALIFICATION_PRODUCT_SHA="$QUALIFICATION_FAILURE_BASE" \
     TEST_CONTRACT=2.0.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
       --action qualification-backlog >/dev/null 2>&1; then
@@ -596,6 +598,7 @@ git -C "$PRODUCT" -c user.name=test -c user.email=test@example.com \
   commit -qm "qualification current failure fixture"
 git -C "$PRODUCT" push -q "$REMOTE" HEAD:refs/heads/ticket/T-700
 FACTORY_KIT_TRUST_SCOPE=qualification-candidate \
+FACTORY_QUALIFICATION_MODE=takeover \
 FACTORY_QUALIFICATION_PRODUCT_SHA="$QUALIFICATION_FAILURE_BASE" \
   TEST_CONTRACT=2.0.0 ticket_state --ticket T-700 --workdir "$PRODUCT" \
     --action qualification-backlog >/dev/null

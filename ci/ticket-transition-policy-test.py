@@ -183,6 +183,7 @@ class TicketTransitionPolicyTest(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {
             "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_MODE": "takeover",
             "FACTORY_QUALIFICATION_PRODUCT_SHA": "invalid",
         }), self.assertRaisesRegex(
             TransitionError, "qualification role-control baseline is invalid",
@@ -191,6 +192,7 @@ class TicketTransitionPolicyTest(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {
             "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_MODE": "takeover",
             "FACTORY_QUALIFICATION_PRODUCT_SHA": "a" * 40,
         }), mock.patch(
             "legacy_closeout._git_object", return_value=None,
@@ -198,6 +200,64 @@ class TicketTransitionPolicyTest(unittest.TestCase):
             TransitionError, "qualification role-control baseline is unavailable",
         ):
             qualification_epoch_text(Path("/unavailable"), "T-1", current)
+
+    def test_successor_uses_original_receipt_epoch_from_canonical_root(self) -> None:
+        original = "b" * 40
+        current_sha = "c" * 40
+        baseline = "State: Backlog\n"
+        current = baseline + "SPEC-LINT: PASS\n"
+        release = Path("/private/tmp/releases") / ("a" * 40)
+        canonical = Path("/private/tmp/product")
+        parked = Path("/private/tmp/parked/T-1")
+        with mock.patch.dict(os.environ, {
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_MODE": "isolated",
+            "FACTORY_QUALIFICATION_RECEIPT_ID": "f" * 64,
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": current_sha,
+            "FACTORY_QUALIFICATION_PRODUCT_TREE": "e" * 40,
+            "FACTORY_RELEASE_PATH": str(release),
+            "FACTORY_PROJECT": "relay",
+            "FACTORY_ROOT": str(canonical),
+        }, clear=True), mock.patch(
+            "qualification_release.role_control_epoch",
+            return_value=(original, "d" * 40),
+        ) as epoch, mock.patch(
+            "legacy_closeout._git_object",
+            return_value=("e" * 40, "blob", baseline.encode()),
+        ) as git_object:
+            self.assertEqual(
+                qualification_epoch_text(parked, "T-1", current), current,
+            )
+        epoch.assert_called_once_with(
+            release, "relay", canonical, "f" * 64, current_sha, "e" * 40,
+        )
+        git_object.assert_called_once_with(
+            parked, f"{original}:factory/tickets/T-1.md",
+        )
+
+    def test_takeover_keeps_current_product_epoch(self) -> None:
+        current_sha = "c" * 40
+        baseline = "State: Building\nSPEC-LINT: PASS\n"
+        with mock.patch.dict(os.environ, {
+            "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_MODE": "takeover",
+            "FACTORY_QUALIFICATION_PRODUCT_SHA": current_sha,
+            "FACTORY_RELEASE_PATH": "/private/tmp/releases/" + "a" * 40,
+            "FACTORY_PROJECT": "relay",
+            "FACTORY_ROOT": "/private/tmp/product",
+        }, clear=True), mock.patch(
+            "qualification_release.role_control_epoch",
+            side_effect=AssertionError("isolated helper must not run"),
+        ), mock.patch(
+            "legacy_closeout._git_object",
+            return_value=("e" * 40, "blob", baseline.encode()),
+        ):
+            self.assertEqual(
+                qualification_epoch_text(
+                    Path("/private/tmp/takeover"), "T-1", baseline,
+                ),
+                "State: Building\n",
+            )
 
     def test_allowed_edges_are_the_complete_declared_policy(self) -> None:
         self.assertEqual(ALLOWED_TRANSITIONS, EXPECTED)
