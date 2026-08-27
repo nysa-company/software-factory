@@ -22552,6 +22552,7 @@ class FactoryControllerTest(unittest.TestCase):
         ).stdout.strip()
         with patch.dict(os.environ, {
             "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_MODE": "takeover",
             "FACTORY_QUALIFICATION_PRODUCT_SHA": baseline,
         }):
             controller, _claim, cell, _passport, _transition = (
@@ -23728,6 +23729,7 @@ class FactoryControllerTest(unittest.TestCase):
 
         with patch.dict(os.environ, {
             "FACTORY_KIT_TRUST_SCOPE": "qualification-candidate",
+            "FACTORY_QUALIFICATION_MODE": "takeover",
             "FACTORY_QUALIFICATION_PRODUCT_SHA": baseline,
         }):
             for ticket, migrated in (("T-219", False), ("T-220", True)):
