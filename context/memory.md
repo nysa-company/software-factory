@@ -15,6 +15,7 @@ Entry format: `## YYYY-MM-DD — Short title`, then `Category: Decision | Prefer
 - An authenticated release-scoped qualification fallback refusal stops explicit preview and apply before readiness or mutation, names its claim evidence, and leaves only successor or fresh-cohort recovery; watch preserves the failed run across restart.
 - Recognized GitHub/Git transport loss is a typed wait, never a cohort defect. Exact remote confirmation and receipt/passport-bound replay resume post-provider role and publication commits without another model call; a disconnect inside a submitted provider attempt remains terminal-accounted and is not transport-replayed.
 - Successor qualification can preserve an exact source-passport checkpoint or descendant only through the protected in-flight release authorization; v2 binds each ticket's authenticated current source after a partial batch, migration never deletes or rewrites ticket work, and prior failed roles reopen only across an exact signed route-only migration suffix. A merged pin-only continuation closes with source-release evidence while retaining the protected successor pin.
+- A successor protected-base refresh may keep the current ticket side of one ticket-file conflict when protected v2 authorization proves the other side is the exact pin-only copy of an authenticated checkpoint and that checkpoint is a raw ancestor of the pre-merge ticket head. Exact HEAD, MERGE_HEAD, conflict blobs, target pin, regular-file mode, and replacement/graft absence remain mandatory; the immediate merge-base pin path is unchanged.
 - Isolated successor contract repair may use an older authenticated blocker only through its complete signed release suffix ending at the exact protected per-ticket source. Prior resume pairs remain immutable transition history and are accepted only as an ordered canonical sequence with one signed completed record per pair and one newest in-branch snapshot of the full sequence. Passport snapshots may omit ordinary descendant ticket commits, while Factory/base/route junctions remain exact. During or after prior-kit receipt migration, the driver admits its historical resume mismatch only while the exact blocked claim and transition digest bind that selected ticket and receipt; event observation order is not authority.
 - An exactly migrated successor claim may chain a current transition receipt after its authenticated predecessor; predecessor evidence remains durable and unedited.
 - Nysa Agents baseline v3 as a toolkit; `bash ci/test-all.sh` is the unconditional full command.
@@ -8465,3 +8466,14 @@ in the existing authenticated activation-receipt chain. The current product
 SHA remains authoritative for successor authorization, Doctor, model routing,
 and protected-base validation; a missing or incoherent historical SHA/tree
 fails closed instead of redefining retained role evidence.
+
+## 2026-08-27 — Decision 628: Authenticated successor checkpoints resolve refresh conflicts
+
+Category: Reliability
+
+One sole regular ticket-file conflict may resolve to the current ticket during
+successor refresh when protected v2 authorization validates the other side as
+the exact pin-only copy of its checkpoint and that checkpoint is a raw ancestor
+of the exact pre-merge head. The resolver binds both conflict blobs, HEAD,
+MERGE_HEAD, branch, target pin, and Git object history, rejects replacement
+refs and grafts, then retains the existing exact two-parent merge invariant.

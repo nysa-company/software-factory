@@ -2146,6 +2146,177 @@ else:
             [merge, ticket_head, protected],
         )
 
+    def test_successor_ticket_pin_conflict_accepts_authorized_checkpoint_descendant(self):
+        old_kit = "b" * 40
+        work = self.temp / "authorized-checkpoint-conflict"
+        command("git", "init", "-q", "-b", "main", str(work))
+        command("git", "config", "user.name", "test", cwd=work)
+        command("git", "config", "user.email", "test@example.com", cwd=work)
+        ticket = work / "factory/tickets/T-800.md"
+        ticket.parent.mkdir(parents=True)
+        ticket.write_text("# T-800\nState: Backlog\nPriority: normal\n")
+        (work / "factory/KIT_PIN").write_text(old_kit + "\n")
+        (work / "factory/PROJECT.env").write_text("GH_REPO=acme/widget\n")
+        command("git", "add", ".", cwd=work)
+        command("git", "commit", "-qm", "source", cwd=work)
+
+        command("git", "switch", "-qc", "ticket/T-800", cwd=work)
+        checkpoint_text = (
+            f"# T-800\nState: Building\nKit-SHA: {old_kit}\nPriority: normal\n"
+        )
+        ticket.write_text(checkpoint_text)
+        command("git", "add", ".", cwd=work)
+        command("git", "commit", "-qm", "authorized checkpoint", cwd=work)
+        checkpoint = self.head_at(work)
+        ticket.write_text(
+            checkpoint_text.replace("State: Building", "State: Review")
+            .replace(old_kit, KIT_SHA)
+            + "builder round 1: PASS\n"
+        )
+        (work / "factory/KIT_PIN").write_text(KIT_SHA + "\n")
+        command("git", "add", ".", cwd=work)
+        command("git", "commit", "-qm", "continue after migration", cwd=work)
+        ticket_head = self.head_at(work)
+        ticket_blob = command(
+            "git", "rev-parse", f"{ticket_head}:factory/tickets/T-800.md", cwd=work,
+        ).stdout.strip()
+
+        command("git", "switch", "-q", "main", cwd=work)
+        ticket.write_text(checkpoint_text.replace(old_kit, KIT_SHA))
+        (work / "factory/KIT_PIN").write_text(KIT_SHA + "\n")
+        authorization = work / f"factory/migrations/inflight-release/{KIT_SHA}.json"
+        authorization.parent.mkdir(parents=True)
+        authorization.write_text(json.dumps({
+            "repository": "acme/widget",
+            "schema": "nysa.software-factory.inflight-release-authorization/v2",
+            "source_kit_sha": old_kit,
+            "target_kit_sha": KIT_SHA,
+            "tickets": [{
+                "branch": "ticket/T-800", "head": checkpoint,
+                "source_kit_sha": old_kit, "state": "Building",
+                "ticket": "T-800",
+            }],
+        }, indent=2, sort_keys=True) + "\n")
+        command("git", "add", ".", cwd=work)
+        command("git", "commit", "-qm", "protect authorized checkpoint", cwd=work)
+        protected = self.head_at(work)
+
+        command("git", "switch", "-q", "ticket/T-800", cwd=work)
+        self.assertNotEqual(
+            command(
+                "git", "merge", "--no-ff", "--no-edit", protected,
+                cwd=work, check=False,
+            ).returncode,
+            0,
+        )
+        self.assertTrue(TICKET_ATTEST.resolve_successor_ticket_pin_conflict(
+            work, "T-800", KIT_SHA, old_head=ticket_head,
+            base_head=protected, branch="ticket/T-800",
+        ))
+        merge = self.head_at(work)
+        self.assertEqual(
+            command(
+                "git", "rev-list", "--parents", "-n", "1", merge, cwd=work,
+            ).stdout.split(),
+            [merge, ticket_head, protected],
+        )
+        self.assertEqual(
+            command(
+                "git", "rev-parse", f"{merge}:factory/tickets/T-800.md", cwd=work,
+            ).stdout.strip(),
+            ticket_blob,
+        )
+
+        command("git", "reset", "--hard", "-q", ticket_head, cwd=work)
+        unrelated = command(
+            "git", "commit-tree", f"{checkpoint}^{{tree}}", "-m", "unrelated",
+            cwd=work,
+        ).stdout.strip()
+        command("git", "switch", "-q", "main", cwd=work)
+        value = json.loads(authorization.read_text())
+        value["tickets"][0]["head"] = unrelated
+        authorization.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+        command("git", "add", ".", cwd=work)
+        command("git", "commit", "-qm", "use unrelated checkpoint", cwd=work)
+        unrelated_protected = self.head_at(work)
+        command("git", "switch", "-q", "ticket/T-800", cwd=work)
+        self.assertNotEqual(command(
+            "git", "merge", "--no-ff", "--no-edit", unrelated_protected,
+            cwd=work, check=False,
+        ).returncode, 0)
+        self.assertFalse(TICKET_ATTEST.resolve_successor_ticket_pin_conflict(
+            work, "T-800", KIT_SHA, old_head=ticket_head,
+            base_head=unrelated_protected, branch="ticket/T-800",
+        ))
+
+        forged = command(
+            "git", "commit-tree", f"{ticket_head}^{{tree}}", "-p", unrelated,
+            "-m", "forged parent", cwd=work,
+        ).stdout.strip()
+        command("git", "replace", ticket_head, forged, cwd=work)
+        self.assertEqual(command(
+            "git", "merge-base", "--is-ancestor", unrelated, ticket_head,
+            cwd=work, check=False,
+        ).returncode, 0)
+        self.assertFalse(TICKET_ATTEST.resolve_successor_ticket_pin_conflict(
+            work, "T-800", KIT_SHA, old_head=ticket_head,
+            base_head=unrelated_protected, branch="ticket/T-800",
+        ))
+        command("git", "replace", "-d", ticket_head, cwd=work)
+
+        common = Path(command(
+            "git", "rev-parse", "--git-common-dir", cwd=work,
+        ).stdout.strip())
+        if not common.is_absolute():
+            common = work / common
+        grafts = common / "info/grafts"
+        grafts.parent.mkdir(exist_ok=True)
+        grafts.write_text(f"{ticket_head} {unrelated}\n")
+        self.assertEqual(command(
+            "git", "merge-base", "--is-ancestor", unrelated, ticket_head,
+            cwd=work, check=False,
+        ).returncode, 0)
+        self.assertFalse(TICKET_ATTEST.resolve_successor_ticket_pin_conflict(
+            work, "T-800", KIT_SHA, old_head=ticket_head,
+            base_head=unrelated_protected, branch="ticket/T-800",
+        ))
+        grafts.unlink()
+        command("git", "merge", "--abort", cwd=work)
+
+        command("git", "switch", "-q", "main", cwd=work)
+        command("git", "reset", "--hard", "-q", protected, cwd=work)
+        ticket.write_text(ticket.read_text() + "protected drift\n")
+        command("git", "add", ".", cwd=work)
+        command("git", "commit", "-qm", "drift protected ticket", cwd=work)
+        drifted_protected = self.head_at(work)
+        command("git", "switch", "-q", "ticket/T-800", cwd=work)
+        self.assertNotEqual(command(
+            "git", "merge", "--no-ff", "--no-edit", drifted_protected,
+            cwd=work, check=False,
+        ).returncode, 0)
+        self.assertFalse(TICKET_ATTEST.resolve_successor_ticket_pin_conflict(
+            work, "T-800", KIT_SHA, old_head=ticket_head,
+            base_head=drifted_protected, branch="ticket/T-800",
+        ))
+        command("git", "merge", "--abort", cwd=work)
+
+        command("git", "merge", "--no-ff", "--no-edit", protected,
+                cwd=work, check=False)
+        protected_blob = command(
+            "git", "rev-parse", f"{protected}:factory/tickets/T-800.md", cwd=work,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "-C", str(work), "update-index", "--index-info"],
+            input=f"100644 {protected_blob} 2\tfactory/tickets/T-800.md\n",
+            text=True, check=True,
+        )
+        self.assertFalse(TICKET_ATTEST.resolve_successor_ticket_pin_conflict(
+            work, "T-800", KIT_SHA, old_head=ticket_head,
+            base_head=protected, branch="ticket/T-800",
+        ))
+        command("git", "merge", "--abort", cwd=work)
+        self.assertEqual(self.head_at(work), ticket_head)
+
     def test_control_only_refresh_invalidates_orphaned_review_lineage(self):
         tree = command(
             "git", "rev-parse", "HEAD^{tree}", cwd=self.product,

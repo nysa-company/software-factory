@@ -59,6 +59,8 @@ from release_lineage import (  # noqa: E402
 )
 from inflight_release import (  # noqa: E402
     AuthorizationError as InflightAuthorizationError,
+    parse_authorization,
+    ticket_source_kit,
     verify_protected_ticket_pin,
 )
 from runtime_paths import canonical_factory_file  # noqa: E402
@@ -2495,7 +2497,9 @@ def refresh_baselines(text, manifests):
     return reviewer_count, approvals, requests, len(narrators)
 
 
-def resolve_successor_ticket_pin_conflict(workdir, ticket, kit_sha):
+def resolve_successor_ticket_pin_conflict(
+    workdir, ticket, kit_sha, *, old_head=None, base_head=None, branch=None,
+):
     relative = f"factory/tickets/{ticket}.md"
     try:
         conflicts = conflict_index(workdir)
@@ -2509,21 +2513,81 @@ def resolve_successor_ticket_pin_conflict(workdir, ticket, kit_sha):
             re.findall(r"^Kit-SHA:\s*([0-9a-f]{40})\s*$", value, re.M)
             for value in values
         ]
-        protected_ticket = replace_field(values[0], "Kit-SHA", kit_sha)
         pin_path = workdir / "factory/KIT_PIN"
         info = pin_path.lstat()
         if (
-            any(len(pin) != 1 for pin in pins)
-            or pins[0][0] == kit_sha
-            or pins[1:] != [[kit_sha], [kit_sha]]
-            or values[2] not in {
-                protected_ticket, protected_ticket.rstrip("\n") + "\n",
-            }
+            pins[1:] != [[kit_sha], [kit_sha]]
             or not stat.S_ISREG(info.st_mode)
             or info.st_nlink != 1
             or pin_path.read_text(encoding="utf-8") != kit_sha + "\n"
         ):
             return False
+        exact_merge_base_pin = False
+        if len(pins[0]) == 1 and pins[0][0] != kit_sha:
+            protected_ticket = replace_field(values[0], "Kit-SHA", kit_sha)
+            exact_merge_base_pin = values[2] in {
+                protected_ticket, protected_ticket.rstrip("\n") + "\n",
+            }
+        if not exact_merge_base_pin:
+            if not all(
+                isinstance(value, str) and valid_oid(value)
+                for value in (old_head, base_head)
+            ) or not isinstance(branch, str):
+                return False
+            if (
+                git(workdir, "rev-parse", "HEAD").stdout.strip() != old_head
+                or git(workdir, "rev-parse", "MERGE_HEAD").stdout.strip() != base_head
+                or conflicts[0]["ticket_blob"] != git(
+                    workdir, "--no-replace-objects", "rev-parse",
+                    f"{old_head}:{relative}",
+                ).stdout.strip()
+                or conflicts[0]["protected_blob"] != git(
+                    workdir, "--no-replace-objects", "rev-parse",
+                    f"{base_head}:{relative}",
+                ).stdout.strip()
+                or git(
+                    workdir, "for-each-ref", "--format=%(refname)", "refs/replace",
+                ).stdout.strip()
+            ):
+                return False
+            common = Path(git(
+                workdir, "rev-parse", "--git-common-dir",
+            ).stdout.strip())
+            if not common.is_absolute():
+                common = workdir / common
+            common = common.resolve(strict=True)
+            if not common.is_dir() or os.path.lexists(common / "info/grafts"):
+                return False
+            authorization, entries = parse_authorization(
+                git(
+                    workdir, "--no-replace-objects", "show",
+                    f"{base_head}:factory/migrations/inflight-release/{kit_sha}.json",
+                ).stdout,
+                git(
+                    workdir, "--no-replace-objects", "show",
+                    f"{base_head}:factory/PROJECT.env",
+                ).stdout,
+                kit_sha,
+            )
+            item = entries.get(ticket)
+            if item is None:
+                return False
+            source = ticket_source_kit(authorization, item)
+            verify_protected_ticket_pin(
+                workdir, base_head, kit_sha, ticket, branch, item["head"],
+                item["state"], source,
+            )
+            if (
+                git(
+                    workdir, "--no-replace-objects", "cat-file", "-t", item["head"],
+                    check=False,
+                ).stdout.strip() != "commit"
+                or git(
+                    workdir, "--no-replace-objects", "merge-base", "--is-ancestor",
+                    item["head"], old_head, check=False,
+                ).returncode
+            ):
+                return False
         git(workdir, "checkout", "--ours", "--", relative)
         git(workdir, "add", "--", relative)
         if git(workdir, "diff", "--name-only", "--diff-filter=U").stdout:
@@ -2532,7 +2596,10 @@ def resolve_successor_ticket_pin_conflict(workdir, ticket, kit_sha):
             workdir, "-c", "user.name=Software Factory", "-c",
             "user.email=factory@local", "commit", "--no-edit", check=False,
         ).returncode
-    except (OSError, UnicodeError, Refusal):
+    except (
+        InflightAuthorizationError, OSError, RuntimeError, UnicodeError,
+        ValueError, Refusal,
+    ):
         return False
 
 
@@ -2686,7 +2753,8 @@ def refresh(
     )
     if merged.returncode:
         if not resolve_successor_ticket_pin_conflict(
-            workdir, args.ticket, kit_sha,
+            workdir, args.ticket, kit_sha, old_head=old_head,
+            base_head=base_head, branch=branch,
         ):
             prior_base = git(
                 workdir, "merge-base", old_head, base_head,
