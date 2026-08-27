@@ -2294,6 +2294,20 @@ else:
             "git", "merge", "--no-ff", "--no-edit", drifted_protected,
             cwd=work, check=False,
         ).returncode, 0)
+        command(
+            "git", "update-ref", f"refs/evil/{drifted_protected}", protected,
+            cwd=work,
+        )
+        with patch.dict(
+            os.environ, {"GIT_REPLACE_REF_BASE": "refs/evil/"}, clear=False,
+        ):
+            self.assertFalse(TICKET_ATTEST.resolve_successor_ticket_pin_conflict(
+                work, "T-800", KIT_SHA, old_head=ticket_head,
+                base_head=drifted_protected, branch="ticket/T-800",
+            ))
+        command(
+            "git", "update-ref", "-d", f"refs/evil/{drifted_protected}", cwd=work,
+        )
         self.assertFalse(TICKET_ATTEST.resolve_successor_ticket_pin_conflict(
             work, "T-800", KIT_SHA, old_head=ticket_head,
             base_head=drifted_protected, branch="ticket/T-800",
