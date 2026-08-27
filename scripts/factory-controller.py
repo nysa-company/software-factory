@@ -829,6 +829,38 @@ class Controller:
                 passport is not None
                 and self.terminal_already_exported(claim, terminal)
             )
+            diagnostic = output_type = ancestor = common_git_dir = None
+            grafts_present = True
+            output_head = terminal.get("role_head_after", "")
+            if (
+                role_exit == "role_exit_protected_ticket_mutation"
+                and role in {"planner", "spec-linter", "builder", "narrator"}
+                and output_head != input_head
+                and SHA.fullmatch(output_head)
+            ):
+                diagnostic = self.cell_git(
+                    claim, "rev-parse", "--verify",
+                    f"refs/factory/failed-role/{claim['ticket']}/{run_id}",
+                )
+                common_git_dir = self.cell_git(
+                    claim, "rev-parse", "--git-common-dir",
+                )
+                # Replacement refs and legacy grafts must not forge ancestry.
+                if common_git_dir.returncode == 0 and common_git_dir.stdout.strip():
+                    common = Path(common_git_dir.stdout.strip())
+                    if not common.is_absolute():
+                        common = Path(claim["worktree"]) / common
+                    try:
+                        (common / "info/grafts").lstat()
+                    except FileNotFoundError:
+                        grafts_present = False
+                output_type = self.cell_git(
+                    claim, "--no-replace-objects", "cat-file", "-t", output_head,
+                )
+                ancestor = self.cell_git(
+                    claim, "--no-replace-objects", "merge-base",
+                    "--is-ancestor", input_head, output_head,
+                )
         except (
             ControllerError, json.JSONDecodeError, OSError, UnicodeError,
         ):
@@ -836,7 +868,24 @@ class Controller:
         if (
             terminal.get("role_branch_before") != claim.get("branch")
             or terminal.get("role_remote_before") != input_head
-            or terminal.get("role_head_after") != input_head
+            or (
+                output_head != input_head
+                and not (
+                    SHA.fullmatch(output_head)
+                    and diagnostic is not None
+                    and diagnostic.returncode == 0
+                    and diagnostic.stdout.strip() == output_head
+                    and common_git_dir is not None
+                    and common_git_dir.returncode == 0
+                    and bool(common_git_dir.stdout.strip())
+                    and not grafts_present
+                    and output_type is not None
+                    and output_type.returncode == 0
+                    and output_type.stdout.strip() == "commit"
+                    and ancestor is not None
+                    and ancestor.returncode == 0
+                )
+            )
             or transition is None
             or transition.get("receipt_sha256") != receipt
             or transition.get("role") != role
@@ -886,10 +935,12 @@ class Controller:
         if matches:
             prior = matches[0]
             prior_run = prior.get("run_id", "")
+            prior_output = prior.get("output_head", "")
             if (
                 not re.fullmatch(
                     r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", prior_run,
                 )
+                or not SHA.fullmatch(prior_output)
                 or prior.get("role_exit")
                 not in QUALIFICATION_DELIVERY_RETRY_EXITS
                 or not DIGEST.fullmatch(
@@ -899,6 +950,7 @@ class Controller:
                 raise ControllerError("role delivery retry evidence is invalid")
             if prior_run == run_id and (
                 prior.get("role_exit") != role_exit
+                or prior_output != output_head
                 or prior.get("transition_receipt_sha256") != receipt
             ):
                 raise ControllerError("role delivery retry replay changed")
@@ -907,7 +959,8 @@ class Controller:
             return "unavailable", ""
         self.event(
             "role_delivery_retry", claim["ticket"], run_id=run_id,
-            input_head=input_head, role=role, role_exit=role_exit,
+            input_head=input_head, output_head=output_head,
+            role=role, role_exit=role_exit,
             transition_receipt_sha256=receipt,
         )
         return "retry", run_id
