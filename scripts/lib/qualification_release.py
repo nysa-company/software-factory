@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 from typing import Any
 
 
@@ -18,6 +19,33 @@ CONTRACTS = frozenset({"1.8.0", "2.0.0"})
 
 class ReceiptError(ValueError):
     pass
+
+
+def _require_ancestor(product: Path, older: str, newer: str) -> None:
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/git", "-C", str(product),
+                "merge-base", "--is-ancestor", older, newer,
+            ],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=5, check=False,
+            env={
+                "GIT_CONFIG": os.devnull,
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_SYSTEM": os.devnull,
+                "GIT_NO_LAZY_FETCH": "1",
+                "GIT_NO_REPLACE_OBJECTS": "1",
+                "GIT_OPTIONAL_LOCKS": "0",
+                "GIT_PROTOCOL_FROM_USER": "0",
+                "LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin",
+            },
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ReceiptError("qualification release product history is invalid") from error
+    if result.returncode != 0:
+        raise ReceiptError("qualification release product history is invalid")
 
 
 def _canonical(value: Any) -> bytes:
@@ -71,10 +99,10 @@ def _read(path: Path) -> dict[str, Any]:
             os.close(descriptor)
 
 
-def receipt_chain(
+def _activation_chain(
     release: Path, project: str, product: Path,
-) -> list[tuple[str, str]]:
-    """Return current-to-oldest validated activation receipt identities."""
+    *, receipt_id: str | None = None,
+) -> tuple[dict[str, Any], list[tuple[str, str, dict[str, Any]]]]:
     if (
         not release.is_absolute()
         or not SHA.fullmatch(release.name)
@@ -88,17 +116,19 @@ def receipt_chain(
         root / "projects" / project, root / "receipts",
     ):
         _directory(path)
-    active = _read(root / "projects" / project / "active.json")
-    receipt_id = active.get("receipt_id")
-    if (
-        active.get("project") != project
-        or active.get("kit_sha") != release.name
-        or active.get("release_path") != str(release)
-        or not isinstance(receipt_id, str)
-        or not DIGEST.fullmatch(receipt_id)
-    ):
+    active: dict[str, Any] = {}
+    if receipt_id is None:
+        active = _read(root / "projects" / project / "active.json")
+        receipt_id = active.get("receipt_id")
+        if (
+            active.get("project") != project
+            or active.get("kit_sha") != release.name
+            or active.get("release_path") != str(release)
+        ):
+            raise ReceiptError("qualification release activation is invalid")
+    if not isinstance(receipt_id, str) or not DIGEST.fullmatch(receipt_id):
         raise ReceiptError("qualification release activation is invalid")
-    result: list[tuple[str, str]] = []
+    result: list[tuple[str, str, dict[str, Any]]] = []
     seen: set[str] = set()
     while receipt_id:
         if receipt_id in seen or len(seen) >= 128:
@@ -128,8 +158,65 @@ def receipt_chain(
             ))
         ):
             raise ReceiptError("qualification release receipt is invalid")
-        result.append((kit_sha, receipt_id))
+        result.append((kit_sha, receipt_id, receipt))
         receipt_id = previous or ""
     if not result or result[0][0] != release.name:
         raise ReceiptError("qualification release receipt is invalid")
-    return result
+    return active, result
+
+
+def receipt_chain(
+    release: Path, project: str, product: Path,
+) -> list[tuple[str, str]]:
+    """Return current-to-oldest validated activation receipt identities."""
+    _active, records = _activation_chain(release, project, product)
+    return [(kit_sha, receipt_id) for kit_sha, receipt_id, _receipt in records]
+
+
+def role_control_epoch(
+    release: Path, project: str, product: Path, receipt_id: str,
+    current_product_sha: str, current_product_tree: str,
+) -> tuple[str, str]:
+    """Return the immutable product SHA/tree where qualification began."""
+    _active, records = _activation_chain(
+        release, project, product, receipt_id=receipt_id,
+    )
+    if records[0][0] != release.name:
+        raise ReceiptError("qualification release receipt is invalid")
+    origin = records[0][2].get("product_origin")
+    from legacy_closeout import _git_object_info
+
+    for _kit_sha, _receipt_id, receipt in records:
+        if (
+            not isinstance(receipt.get("product_sha"), str)
+            or not SHA.fullmatch(receipt["product_sha"])
+            or not isinstance(receipt.get("product_tree"), str)
+            or not SHA.fullmatch(receipt["product_tree"])
+            or receipt.get("product_origin") != origin
+            or not isinstance(origin, str)
+            or not origin
+        ):
+            raise ReceiptError("qualification release receipt is invalid")
+        commit = _git_object_info(product, receipt["product_sha"])
+        tree = _git_object_info(product, f"{receipt['product_sha']}^{{tree}}")
+        if (
+            commit is None
+            or commit[0] != receipt["product_sha"]
+            or commit[1] != "commit"
+            or tree is None
+            or tree[0] != receipt["product_tree"]
+            or tree[1] != "tree"
+        ):
+            raise ReceiptError("qualification release product history is invalid")
+    for newer, older in zip(records, records[1:]):
+        _require_ancestor(
+            product, older[2]["product_sha"], newer[2]["product_sha"],
+        )
+    current = records[0][2]
+    if (
+        current.get("product_sha") != current_product_sha
+        or current.get("product_tree") != current_product_tree
+    ):
+        raise ReceiptError("qualification release activation is invalid")
+    oldest = records[-1][2]
+    return oldest["product_sha"], oldest["product_tree"]

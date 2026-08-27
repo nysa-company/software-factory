@@ -180,6 +180,34 @@ def qualification_epoch_text(product: Path, ticket: str, current: str) -> str:
         r"T-[0-9]+", ticket
     ):
         raise TransitionError("qualification role-control baseline is invalid")
+    mode = os.environ.get("FACTORY_QUALIFICATION_MODE", "")
+    if mode == "isolated":
+        release_path = os.environ.get("FACTORY_RELEASE_PATH", "")
+        project = os.environ.get("FACTORY_PROJECT", "")
+        factory_root = os.environ.get("FACTORY_ROOT", "")
+        receipt_id = os.environ.get("FACTORY_QUALIFICATION_RECEIPT_ID", "")
+        current_tree = os.environ.get("FACTORY_QUALIFICATION_PRODUCT_TREE", "")
+        if (
+            not Path(release_path).is_absolute()
+            or not Path(factory_root).is_absolute()
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", project)
+            or not re.fullmatch(r"[0-9a-f]{64}", receipt_id)
+            or not re.fullmatch(r"[0-9a-f]{40}", current_tree)
+        ):
+            raise TransitionError("qualification role-control baseline is invalid")
+        from qualification_release import ReceiptError, role_control_epoch
+
+        try:
+            sha, _tree = role_control_epoch(
+                Path(release_path), project, Path(factory_root), receipt_id,
+                sha, current_tree,
+            )
+        except (OSError, ReceiptError) as error:
+            raise TransitionError(
+                "qualification role-control baseline is invalid"
+            ) from error
+    elif mode != "takeover":
+        raise TransitionError("qualification role-control baseline is invalid")
     from legacy_closeout import _git_object
 
     try:

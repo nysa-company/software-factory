@@ -1080,6 +1080,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
             launcher_text,
         )
         self.assertIn(
+            '"FACTORY_QUALIFICATION_RECEIPT_ID=$RECEIPT_ID"',
+            launcher_text,
+        )
+        self.assertIn(
             '"FACTORY_QUALIFICATION_PRODUCT_TREE=$ACTIVE_PRODUCT_TREE"',
             launcher_text,
         )
