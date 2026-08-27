@@ -7325,7 +7325,8 @@ class FactoryControllerTest(unittest.TestCase):
             "kit_sha": controller.release_path.name, "phase": "completed",
             "exit_status": "11",
             "role_branch_before": "ticket/T-110",
-            "role_exit": "role_exit_dirty", "role_head_before": "a" * 40,
+            "role_exit": "role_exit_protected_ticket_mutation",
+            "role_head_before": "a" * 40,
             "role_head_after": "a" * 40,
             "role_remote_before": "a" * 40,
             "role": "builder", "route_plan_sha256": route_digest,
@@ -7417,6 +7418,10 @@ class FactoryControllerTest(unittest.TestCase):
             if CONTROL.read(path)["event"] == "role_delivery_retry"
         ]
         self.assertEqual(len(retries), 1)
+        self.assertEqual(
+            retries[0]["role_exit"],
+            "role_exit_protected_ticket_mutation",
+        )
 
     def test_qualification_latch_blocks_new_claims_and_route_pins(self) -> None:
         controller = CONTROL.Controller(self.args)
@@ -18931,7 +18936,8 @@ class FactoryControllerTest(unittest.TestCase):
         route_digest = hashlib.sha256(route.read_bytes()).hexdigest()
         CONTROL.Controller.event(
             controller, "role_delivery_retry", failed["ticket"],
-            input_head=input_head, role="builder", role_exit="role_exit_dirty",
+            input_head=input_head, role="builder",
+            role_exit="role_exit_protected_ticket_mutation",
             run_id="run-1", transition_receipt_sha256=first_receipt,
         )
         self.operator_passport(
@@ -18957,7 +18963,8 @@ class FactoryControllerTest(unittest.TestCase):
             "go_issued": "1", "kit_sha": controller.release_path.name,
             "phase": "completed", "role": "builder",
             "role_branch_before": failed["branch"],
-            "role_exit": "role_exit_dirty", "role_head_after": input_head,
+            "role_exit": "role_exit_protected_ticket_mutation",
+            "role_head_after": input_head,
             "role_head_before": input_head, "role_remote_before": input_head,
             "route_plan_sha256": route_digest, "run_id": "run-2",
             "task_submitted": "1", "ticket": failed["ticket"],

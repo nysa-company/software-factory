@@ -31,6 +31,7 @@ MAX_CURSOR_BYTES = 1024
 TIMEOUT_REASONS = frozenset({"hard_timeout", "invalid_progress", "soft_timeout"})
 DELIVERY_RETRY_EXITS = frozenset({
     "role_exit_dirty", "role_exit_invalid_output", "role_exit_no_commit",
+    "role_exit_protected_ticket_mutation",
 })
 TYPED_RECOVERY_KINDS = frozenset({
     "dirty_role_output",

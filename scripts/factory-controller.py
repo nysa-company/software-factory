@@ -104,6 +104,7 @@ TERMINAL_ACCOUNTING = {
 }
 QUALIFICATION_DELIVERY_RETRY_EXITS = frozenset({
     "role_exit_dirty", "role_exit_invalid_output", "role_exit_no_commit",
+    "role_exit_protected_ticket_mutation",
 })
 CONTRACT_RESUME_REFUSALS = frozenset({
     "resume_ancestry_invalid",
