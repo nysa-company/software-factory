@@ -7490,7 +7490,7 @@ class FactoryControllerTest(unittest.TestCase):
             "role_branch_before": "ticket/T-110",
             "role_exit": "role_exit_protected_ticket_mutation",
             "role_head_before": "a" * 40,
-            "role_head_after": "a" * 40,
+            "role_head_after": "d" * 40,
             "role_remote_before": "a" * 40,
             "role": "builder", "route_plan_sha256": route_digest,
             "run_id": "run-1", "transition_receipt_sha256": "b" * 64,
@@ -7500,7 +7500,8 @@ class FactoryControllerTest(unittest.TestCase):
             "consumed": True, "head_sha": "a" * 40,
             "passport_sha256": None,
             "receipt_sha256": claim["receipt"], "role": claim["role"],
-            "route_plan_sha256": route_digest, "stage": "RUN builder",
+            "route_plan_sha256": route_digest,
+            "stage": f"RUN {claim['role']}",
         }
         controller.remote_cell_head_status = lambda _claim: (
             "pushed", "a" * 40, "a" * 40,
@@ -7516,10 +7517,28 @@ class FactoryControllerTest(unittest.TestCase):
             controller.qualification_delivery_retry(claim, first),
             ("unavailable", ""),
         )
-        controller.cell_git = lambda _claim, command, *_args: argparse.Namespace(
-            returncode=0,
-            stdout=claim["branch"] + "\n" if command == "symbolic-ref" else "",
-        )
+        diagnostic_head = "d" * 40
+        object_type = "commit"
+        ancestor_status = 0
+
+        def contained_git(_claim, command, *_args):
+            operation = _args[0] if command == "--no-replace-objects" else command
+            rev_parse = (
+                ".git\n" if _args and _args[0] == "--git-common-dir"
+                else diagnostic_head + "\n"
+            )
+            return argparse.Namespace(
+                returncode=(
+                    ancestor_status if operation == "merge-base" else 0
+                ),
+                stdout={
+                    "symbolic-ref": claim["branch"] + "\n",
+                    "rev-parse": rev_parse,
+                    "cat-file": object_type + "\n",
+                }.get(operation, ""),
+            )
+
+        controller.cell_git = contained_git
         self.assertEqual(
             controller.qualification_delivery_retry(
                 claim, {**first, "task_submitted": "0"},
@@ -7528,7 +7547,7 @@ class FactoryControllerTest(unittest.TestCase):
         )
         for malformed in (
             {**first, "exit_status": "1"},
-            {**first, "role_head_after": "d" * 40},
+            {**first, "role_head_after": "e" * 40},
         ):
             with self.subTest(malformed=malformed):
                 self.assertEqual(
@@ -7545,10 +7564,48 @@ class FactoryControllerTest(unittest.TestCase):
             CONTROL.read(path)["event"] == "role_delivery_retry"
             for path in controller.events.glob("*.json")
         ))
+        controller.cell_git = lambda _claim, command, *_args: argparse.Namespace(
+            returncode=128 if command == "rev-parse" else 0,
+            stdout=claim["branch"] + "\n" if command == "symbolic-ref" else "",
+        )
+        self.assertEqual(
+            controller.qualification_delivery_retry(claim, first),
+            ("unavailable", ""),
+        )
+        controller.cell_git = contained_git
+        object_type = "tag"
+        self.assertEqual(
+            controller.qualification_delivery_retry(claim, first),
+            ("unavailable", ""),
+        )
+        object_type = "commit"
+        ancestor_status = 1
+        self.assertEqual(
+            controller.qualification_delivery_retry(claim, first),
+            ("unavailable", ""),
+        )
+        ancestor_status = 0
+        for role in ("test-author", "reviewer"):
+            claim["role"] = role
+            self.assertEqual(
+                controller.qualification_delivery_retry(
+                    claim, {**first, "role": role},
+                ),
+                ("unavailable", ""),
+            )
+        claim["role"] = "builder"
         self.assertEqual(
             controller.qualification_delivery_retry(claim, first),
             ("retry", "run-1"),
         )
+        diagnostic_head = "e" * 40
+        with self.assertRaisesRegex(
+            CONTROL.ControllerError, "role delivery retry replay changed",
+        ):
+            controller.qualification_delivery_retry(
+                claim, {**first, "role_head_after": diagnostic_head},
+            )
+        diagnostic_head = "d" * 40
         controller.remote_cell_head_status = lambda _claim: (
             "pushed", "d" * 40, "d" * 40,
         )
@@ -7566,8 +7623,10 @@ class FactoryControllerTest(unittest.TestCase):
             ("retry", "run-1"),
         )
         claim["receipt"] = "c" * 64
+        diagnostic_head = "e" * 40
         second = {
             **first, "run_id": "run-2",
+            "role_head_after": diagnostic_head,
             "transition_receipt_sha256": "c" * 64,
         }
         self.assertEqual(
@@ -7584,6 +7643,100 @@ class FactoryControllerTest(unittest.TestCase):
         self.assertEqual(
             retries[0]["role_exit"],
             "role_exit_protected_ticket_mutation",
+        )
+        self.assertEqual(retries[0]["output_head"], "d" * 40)
+
+    def test_qualification_delivery_retry_accepts_wrapper_quarantine(self) -> None:
+        controller = CONTROL.Controller(self.args)
+        controller.qualification = {"generation": 1, "tickets": ["T-110"]}
+        controller.qualification_manifest_sha256 = "f" * 64
+        cell = self.root / "quarantined-cell"
+        remote = self.root / "quarantined-remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", remote], check=True)
+        subprocess.run(
+            ["git", "init", "-q", "-b", "ticket/T-110", cell], check=True,
+        )
+
+        def git(*arguments: str) -> str:
+            return subprocess.run(
+                ["git", "-C", cell, *arguments], check=True,
+                capture_output=True, text=True,
+            ).stdout.strip()
+
+        git("config", "user.name", "Factory")
+        git("config", "user.email", "factory@example.invalid")
+        route = cell / "factory/route-plans/T-110.json"
+        route.parent.mkdir(parents=True)
+        route.write_text("{}\n", encoding="utf-8")
+        output = cell / "app/output"
+        output.parent.mkdir()
+        output.write_text("input\n", encoding="utf-8")
+        git("add", ".")
+        git("commit", "-qm", "input")
+        git("remote", "add", "origin", str(remote))
+        git("push", "-q", "-u", "origin", "ticket/T-110")
+        input_head = git("rev-parse", "HEAD")
+        output.write_text("rejected\n", encoding="utf-8")
+        git("add", ".")
+        git("commit", "-qm", "rejected")
+        output_head = git("rev-parse", "HEAD")
+        diagnostic = "refs/factory/failed-role/T-110/run-1"
+        git("update-ref", diagnostic, output_head)
+        git(
+            "update-ref", "refs/heads/ticket/T-110", input_head, output_head,
+        )
+        git("restore", f"--source={input_head}", "--staged", "--worktree", "--", ".")
+        route_digest = hashlib.sha256(route.read_bytes()).hexdigest()
+        claim = {
+            "branch": "ticket/T-110", "receipt": "b" * 64,
+            "role": "builder", "ticket": "T-110", "worktree": str(cell),
+        }
+        controller.transition_receipt = lambda *_args, **_kwargs: {
+            "consumed": True, "head_sha": input_head, "passport_sha256": None,
+            "receipt_sha256": claim["receipt"], "role": claim["role"],
+            "route_plan_sha256": route_digest, "stage": "RUN builder",
+        }
+        terminal = {
+            "accounting_state": "completed", "exit_status": "11",
+            "go_issued": "1", "kit_sha": controller.release_path.name,
+            "phase": "completed", "role": "builder",
+            "role_branch_before": claim["branch"],
+            "role_exit": "role_exit_protected_ticket_mutation",
+            "role_head_after": output_head, "role_head_before": input_head,
+            "role_remote_before": input_head, "route_plan_sha256": route_digest,
+            "run_id": "run-1", "task_submitted": "1", "ticket": "T-110",
+            "transition_receipt_sha256": claim["receipt"],
+        }
+
+        unrelated = git("commit-tree", f"{input_head}^{{tree}}", "-m", "unrelated")
+        git("update-ref", diagnostic, unrelated, output_head)
+        git("replace", unrelated, output_head)
+        self.assertEqual(
+            controller.qualification_delivery_retry(
+                claim, {**terminal, "role_head_after": unrelated},
+            ),
+            ("unavailable", ""),
+        )
+        git("replace", "-d", unrelated)
+        git("update-ref", diagnostic, output_head, unrelated)
+        common = Path(git("rev-parse", "--git-common-dir"))
+        if not common.is_absolute():
+            common = cell / common
+        grafts = common / "info/grafts"
+        grafts.parent.mkdir(exist_ok=True)
+        grafts.write_text(f"{unrelated} {input_head}\n", encoding="utf-8")
+        git("update-ref", diagnostic, unrelated, output_head)
+        self.assertEqual(
+            controller.qualification_delivery_retry(
+                claim, {**terminal, "role_head_after": unrelated},
+            ),
+            ("unavailable", ""),
+        )
+        grafts.unlink()
+        git("update-ref", diagnostic, output_head, unrelated)
+        self.assertEqual(
+            controller.qualification_delivery_retry(claim, terminal),
+            ("retry", "run-1"),
         )
 
     def test_qualification_latch_blocks_new_claims_and_route_pins(self) -> None:
@@ -19279,7 +19432,7 @@ class FactoryControllerTest(unittest.TestCase):
         route_digest = hashlib.sha256(route.read_bytes()).hexdigest()
         CONTROL.Controller.event(
             controller, "role_delivery_retry", failed["ticket"],
-            input_head=input_head, role="builder",
+            input_head=input_head, output_head="e" * 40, role="builder",
             role_exit="role_exit_protected_ticket_mutation",
             run_id="run-1", transition_receipt_sha256=first_receipt,
         )
@@ -19307,7 +19460,7 @@ class FactoryControllerTest(unittest.TestCase):
             "phase": "completed", "role": "builder",
             "role_branch_before": failed["branch"],
             "role_exit": "role_exit_protected_ticket_mutation",
-            "role_head_after": input_head,
+            "role_head_after": "d" * 40,
             "role_head_before": input_head, "role_remote_before": input_head,
             "route_plan_sha256": route_digest, "run_id": "run-2",
             "task_submitted": "1", "ticket": failed["ticket"],
@@ -19325,14 +19478,24 @@ class FactoryControllerTest(unittest.TestCase):
             "role": "builder", "route_plan_sha256": route_digest,
             "stage": "RUN builder",
         }
-        dirty = True
-        restarted.cell_git = lambda claim, command, *_args: argparse.Namespace(
-            returncode=0,
-            stdout=(
-                claim["branch"] + "\n" if command == "symbolic-ref"
-                else " M app/output" if command == "status" and dirty else ""
-            ),
-        )
+        def contained_git(claim, command, *arguments):
+            operation = (
+                arguments[0] if command == "--no-replace-objects" else command
+            )
+            rev_parse = (
+                ".git\n" if arguments and arguments[0] == "--git-common-dir"
+                else "d" * 40 + "\n"
+            )
+            return argparse.Namespace(
+                returncode=0,
+                stdout={
+                    "symbolic-ref": claim["branch"] + "\n",
+                    "rev-parse": rev_parse,
+                    "cat-file": "commit\n",
+                }.get(operation, ""),
+            )
+
+        restarted.cell_git = contained_git
         restarted.remote_cell_head_status = lambda _claim: (
             "pushed", input_head, input_head,
         )
@@ -19350,14 +19513,9 @@ class FactoryControllerTest(unittest.TestCase):
         restarted.protected_main_head = lambda: "f" * 40
         restarted.mark_reconciling = lambda _claim, **_kwargs: None
         restarted.ensure_lease = lambda *_args: None
-        quarantines = []
-
-        def quarantine(*_args):
-            nonlocal dirty
-            dirty = False
-            quarantines.append("run-2")
-
-        restarted.quarantine_dirty_role_output = quarantine
+        restarted.quarantine_dirty_role_output = lambda *_args: self.fail(
+            "wrapper-restored protected output was quarantined again"
+        )
         migrations = []
         restarted.migrate_passport = lambda claim, _publication: (
             migrations.append(claim["ticket"])
@@ -19387,7 +19545,6 @@ class FactoryControllerTest(unittest.TestCase):
         result = restarted.reconcile()
 
         self.assertTrue(restarted.qualification_cohort_error.is_set())
-        self.assertEqual(set(quarantines), {"run-2"})
         self.assertEqual(calls, ["T-110"])
         self.assertEqual(result["results"], [{
             "status": "blocked", "ticket": "T-110",
