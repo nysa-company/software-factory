@@ -8477,3 +8477,15 @@ the exact pin-only copy of its checkpoint and that checkpoint is a raw ancestor
 of the exact pre-merge head. The resolver binds both conflict blobs, HEAD,
 MERGE_HEAD, branch, target pin, and Git object history, rejects replacement
 refs and grafts, then retains the existing exact two-parent merge invariant.
+
+## 2026-08-27 — Decision 629: Successor checkpoint trust is direction-aware
+
+Category: Reliability
+
+Successor upgrade accepts a protected checkpoint only when it is linearly
+related to the current authenticated passport head. A later checkpoint keeps
+the existing fast-forward rule and requires replay authority when routes differ.
+An earlier checkpoint may precede authenticated passport work and accepts exact
+or replayed prior route authority. Candidate authorization remains exact-only;
+divergent history and every existing identity, evidence, and accounting drift
+remain fail-closed.

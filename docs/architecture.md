@@ -2016,13 +2016,16 @@ either a v1 ticket route plan or a v2 route journal whose ticket and Kit-SHA
 match the authorization and whose complete history passes the candidate's
 migration validator. The normal maintenance, zero-active-run, and
 zero-dispatcher-lease barriers still apply.
-Successor qualification may use that same exact protected entry to preserve a
-checkpoint at or after the source-authenticated passport head when its
-historical passport cannot satisfy a newer role-history validator. The
-preparer still requires the source HMAC, release lineage, run accounting,
-passport commit/tree/ticket/route identity, an unchanged route through the
-authorized descendant, and an authorization set equal to the selected cohort;
-it does not relabel descendant source work as completed candidate evidence.
+Successor qualification may use that same exact protected entry when its
+checkpoint and the source-authenticated passport head are linearly related and
+the historical passport cannot satisfy a newer role-history validator. A later
+checkpoint retains the existing CAS fast-forward and requires replay authority
+when its route differs. An earlier checkpoint may precede authenticated passport
+work; route drift then requires exact or replayed authority from the prior
+protected authorization. The preparer still requires the source HMAC, release
+lineage, run accounting, passport commit/tree/ticket/route identity, and an
+authorization set equal to the selected cohort. Divergent history fails closed,
+and descendant source work is never relabeled as candidate evidence.
 If completed source roles advanced the passport after its final migration,
 that terminal gap is accepted only when its commits form the exact accounted
 linear role sequence, the current protected base terminates authenticated base

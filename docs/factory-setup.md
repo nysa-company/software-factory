@@ -310,12 +310,14 @@ provider state, ticket branches, or paid roles are created.
   lineage evidence on an idempotent restart.
   A protected in-flight release authorization for the exact selected cohort is
   the narrow exception for preserving source-authenticated ticket work that a
-  newer historical validator cannot replay. It must bind each passport head or
-  an exact descendant with the same route and current state. Upgrade keeps
-  descendant work incomplete and source evidence historical, then model
-  migration may fast-forward an ancestor remote to that checkpoint and the
-  candidate Kit-SHA in `factory/KIT_PIN`, the ticket, and its route journal in
-  one CAS-protected push; it never resets ticket work.
+  newer historical validator cannot replay. It must bind a checkpoint linearly
+  related to each passport head and preserve the current state. A later
+  checkpoint may fast-forward the passport only through replayed route
+  authority. An earlier checkpoint may precede authenticated passport work;
+  route drift then requires exact or replayed prior authority. Divergent history
+  refuses. Upgrade keeps source work incomplete and historical, then model
+  migration writes the candidate Kit-SHA in `factory/KIT_PIN`, the ticket, and
+  its route journal in one CAS-protected push; it never resets ticket work.
   If an interrupted sealed batch leaves selected tickets on different
   authenticated releases, authorization v2 keeps `source_kit_sha` at the
   manifest's source root and adds each ticket's exact current

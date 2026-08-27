@@ -2924,17 +2924,40 @@ def validate_successor_upgrade_cohort(
                     checkpoint_route_sha256 = hashlib.sha256(
                         checkpoint_route.stdout
                     ).hexdigest()
+                    checkpoint_ancestor = subprocess.run(
+                        [
+                            "git", "-C", str(product), "merge-base",
+                            "--is-ancestor", checkpoint["head"],
+                            value.get("head_sha", ""),
+                        ],
+                        capture_output=True, check=False, timeout=120,
+                    ).returncode == 0
+                    passport_ancestor = subprocess.run(
+                        [
+                            "git", "-C", str(product), "merge-base",
+                            "--is-ancestor", value.get("head_sha", ""),
+                            checkpoint["head"],
+                        ],
+                        capture_output=True, check=False, timeout=120,
+                    ).returncode == 0
+                    prior_route_authority = None
+                    if checkpoint_route_sha256 != value.get("route_plan_sha256"):
+                        prior_route_authority = verify_inflight_migration(
+                            product, active_product_sha,
+                            value["factory_sha"], ticket,
+                            value.get("branch", ""), checkpoint["head"],
+                        )
                     route_checkpoint_valid = (
                         passport_route_sha256 == value.get("route_plan_sha256")
                         and (
                             checkpoint_route_sha256
                             == value.get("route_plan_sha256")
                             or value.get("factory_sha") in releases
-                            and verify_inflight_migration(
-                                product, active_product_sha,
-                                value["factory_sha"], ticket,
-                                value.get("branch", ""), checkpoint["head"],
-                            ) == "replay"
+                            and (
+                                prior_route_authority == "replay"
+                                or checkpoint_ancestor
+                                and prior_route_authority == "exact"
+                            )
                         )
                     )
                     checkpoint_valid = (
@@ -2967,14 +2990,7 @@ def validate_successor_upgrade_cohort(
                             candidate, ticket, value.get("branch", ""),
                             checkpoint["head"],
                         ) == "exact"
-                        and subprocess.run(
-                            [
-                                "git", "-C", str(product), "merge-base",
-                                "--is-ancestor", value.get("head_sha", ""),
-                                checkpoint["head"],
-                            ],
-                            capture_output=True, check=False, timeout=120,
-                        ).returncode == 0
+                        and (checkpoint_ancestor or passport_ancestor)
                         and command(
                             "git", "-C", str(product), "rev-parse",
                             f"{value.get('head_sha', '')}^{{tree}}",
