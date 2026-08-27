@@ -8443,3 +8443,15 @@ must be linear and exactly accounted, retain the final migration base in
 history, terminate that history at the current protected base, and preserve
 the route while the checkpoint binds the exact branch, head, state, and source.
 Validation remains read-only and never infers a migration edge.
+
+## 2026-08-27 — Decision 626: Successor recovery proves contained provider charges
+
+Category: Reliability
+
+Qualification restart routes a prior-release protected-mutation terminal to
+successor recovery only after validating its exact typed identity. A completed
+provider charge additionally requires one authenticated matching charge, no
+matching completion, the exact terminal manifest digest, an exact direct
+failed-role commit ref, descendant output ancestry, and existing clean
+remote/passport migration lineage. Same-release or malformed evidence remains
+latched fail-closed without another provider attempt.
