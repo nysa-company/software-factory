@@ -5679,9 +5679,9 @@ class QualificationEnvironmentTest(unittest.TestCase):
         passports = controller / "passports"
         passports.mkdir(mode=0o700, parents=True)
         controller.chmod(0o700)
-        secret = b"p" * 32
+        material = b"p" * 32
         key = controller / "passport.key"
-        key.write_bytes(secret)
+        key.write_bytes(material)
         key.chmod(0o600)
         passport_path = passports / f"{ticket}.json"
 
@@ -5718,7 +5718,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
             role_evidence: list[dict[str, object]] = completed,
             accounting: list[dict[str, object]] = charges,
         ) -> dict[str, object]:
-            self.write_passport(passport_path, secret, ticket, source)
+            self.write_passport(passport_path, material, ticket, source)
             value = json.loads(passport_path.read_text(encoding="utf-8"))
             value.pop("authentication_sha256")
             value.pop("passport_sha256")
@@ -5801,7 +5801,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         }
         authorize(gap_end)
         valid = passport_value()
-        self.sign_passport(passport_path, secret, valid)
+        self.sign_passport(passport_path, material, valid)
         controller_bytes = {
             path.relative_to(controller): path.read_bytes()
             for path in controller.rglob("*") if path.is_file()
@@ -5840,7 +5840,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 mutate(changed)
                 if label == "missing-accounting":
                     changed["cumulative_charges_micro_usd"] = 0
-                self.sign_passport(passport_path, secret, changed)
+                self.sign_passport(passport_path, material, changed)
                 with self.assertRaisesRegex(
                     ENVIRONMENT.EnvironmentError,
                     "successor qualification requires every selected ticket",
@@ -5850,7 +5850,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
                         prior_base, manifest,
                     )
 
-        self.sign_passport(passport_path, secret, valid)
+        self.sign_passport(passport_path, material, valid)
         authorize(gap_start)
         with self.assertRaisesRegex(
             ENVIRONMENT.EnvironmentError,
@@ -5925,7 +5925,7 @@ class QualificationEnvironmentTest(unittest.TestCase):
         nonlinear = passport_value(
             nonlinear_end, nonlinear_completed, nonlinear_charges,
         )
-        self.sign_passport(passport_path, secret, nonlinear)
+        self.sign_passport(passport_path, material, nonlinear)
         authorize(nonlinear_end)
         with self.assertRaisesRegex(
             ENVIRONMENT.EnvironmentError,
