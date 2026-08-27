@@ -8423,3 +8423,12 @@ one passport migration that also advances protected main only when the valid v2
 edge matches the passport's final two authenticated base-history entries. Every
 other caller keeps the unchanged-base invariant, and malformed history remains
 fail-closed before remote validation.
+
+## 2026-08-27 — Decision 624: Shared artifact creation converges safely
+
+Category: Reliability
+
+Concurrent qualification reconciliation may idempotently create the shared
+retained-runs directory. Every caller still revalidates its canonical path,
+owner, directory type, and exact `0700` mode before retaining artifacts;
+symlinks, files, foreign ownership, and unsafe modes remain fail-closed.

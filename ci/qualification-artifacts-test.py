@@ -6,9 +6,12 @@ import hmac
 import importlib.util
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tempfile
+import threading
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -160,6 +163,58 @@ class QualificationArtifactsTest(unittest.TestCase):
         path.write_bytes(raw)
         os.chmod(path, 0o600)
         return path
+
+    def test_concurrent_first_use_creates_one_safe_retention_directory(
+        self,
+    ) -> None:
+        retention = self.state / "retained-runs"
+        mkdir = Path.mkdir
+        barrier = threading.Barrier(2)
+
+        def concurrent_mkdir(path, *args, **kwargs):
+            if path == retention:
+                barrier.wait(timeout=5)
+            return mkdir(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "mkdir", concurrent_mkdir):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(
+                    lambda _: ARTIFACTS._directory(retention, create=True),
+                    range(2),
+                ))
+
+        self.assertEqual(results, [retention, retention])
+        self.assertEqual(retention.stat().st_mode & 0o777, 0o700)
+
+    def test_existing_unsafe_retention_paths_fail_closed(self) -> None:
+        target = self.state / "safe-target"
+        target.mkdir(mode=0o700)
+        unsafe = {
+            "symlink": self.state / "retained-symlink",
+            "file": self.state / "retained-file",
+            "mode": self.state / "retained-mode",
+        }
+        unsafe["symlink"].symlink_to(target)
+        unsafe["file"].write_bytes(b"")
+        os.chmod(unsafe["file"], 0o700)
+        unsafe["mode"].mkdir(mode=0o700)
+        os.chmod(unsafe["mode"], 0o755)
+
+        for kind, path in unsafe.items():
+            with self.subTest(kind=kind), self.assertRaisesRegex(
+                ARTIFACTS.ArtifactError,
+                "artifact retention directory is unsafe",
+            ):
+                ARTIFACTS._directory(path, create=True)
+
+        owner = self.state / "retained-owner"
+        owner.mkdir(mode=0o700)
+        with mock.patch.object(os, "geteuid", return_value=os.geteuid() + 1):
+            with self.assertRaisesRegex(
+                ARTIFACTS.ArtifactError,
+                "artifact retention directory is unsafe",
+            ):
+                ARTIFACTS._directory(owner, create=True)
 
     def test_retains_and_restores_only_exact_passport_closure(self) -> None:
         unrelated = self.runs / "unrelated.out"
