@@ -5019,13 +5019,6 @@ class QualificationEnvironmentTest(unittest.TestCase):
         run(self.product, "git", "add", "factory")
         run(self.product, "git", "commit", "-qm", "source checkpoint")
         checkpoint_parent = run(self.product, "git", "rev-parse", "HEAD")
-        checkpoint_parent_tree = run(
-            self.product, "git", "rev-parse", f"{checkpoint_parent}^{{tree}}",
-        )
-        checkpoint_parent_ticket_blob = run(
-            self.product, "git", "rev-parse",
-            f"{checkpoint_parent}:factory/tickets/{ticket}.md",
-        )
         ticket_path.write_text(
             ticket_path.read_text() + "\npreserved source work\n",
             encoding="utf-8",
@@ -5038,7 +5031,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
 
         passport_path = passports / f"{ticket}.json"
 
-        def write_source_passport(protected: str) -> None:
+        def write_source_passport(
+            protected: str, head: str = checkpoint,
+            current_route_sha256: str = route_sha256,
+        ) -> None:
             self.write_passport(passport_path, secret, ticket, source)
             value = json.loads(passport_path.read_text(encoding="utf-8"))
             value.pop("authentication_sha256")
@@ -5047,8 +5043,10 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 "base_history": [protected],
                 "current_stage": "RUN planner",
                 "current_state": "Ready",
-                "head_sha": checkpoint_parent,
-                "head_tree": checkpoint_parent_tree,
+                "head_sha": head,
+                "head_tree": run(
+                    self.product, "git", "rev-parse", f"{head}^{{tree}}",
+                ),
                 "migration_history": [{
                     "from_factory_sha": source,
                     "from_head_sha": base,
@@ -5060,15 +5058,18 @@ class QualificationEnvironmentTest(unittest.TestCase):
                         "nysa.software-factory.ticket-passport-migration/v2"
                     ),
                     "to_factory_sha": source,
-                    "to_head_sha": checkpoint_parent,
+                    "to_head_sha": head,
                     "to_protected_base_sha": protected,
-                    "to_route_plan_sha256": route_sha256,
+                    "to_route_plan_sha256": current_route_sha256,
                 }],
                 "parent_digest": "4" * 64,
                 "parent_file_sha256": "5" * 64,
                 "protected_base_sha": protected,
-                "route_plan_sha256": route_sha256,
-                "ticket_blob": checkpoint_parent_ticket_blob,
+                "route_plan_sha256": current_route_sha256,
+                "ticket_blob": run(
+                    self.product, "git", "rev-parse",
+                    f"{head}:factory/tickets/{ticket}.md",
+                ),
             })
             self.sign_passport(passport_path, secret, value)
 
@@ -5111,14 +5112,26 @@ class QualificationEnvironmentTest(unittest.TestCase):
             run(self.product, "git", "commit", "-qm", "authorize checkpoint")
             return run(self.product, "git", "rev-parse", "HEAD")
 
-        protected = authorize(checkpoint)
+        forward_protected = authorize(checkpoint)
+        write_source_passport(forward_protected, checkpoint_parent)
+        ENVIRONMENT.validate_successor_upgrade_cohort(
+            self.factory, self.product, controller, "relay", source,
+            base, manifest,
+        )
+        write_source_passport(forward_protected, checkpoint)
+        ENVIRONMENT.validate_successor_upgrade_cohort(
+            self.factory, self.product, controller, "relay", source,
+            base, manifest,
+        )
+
+        protected = authorize(checkpoint_parent)
         write_source_passport(protected)
         ENVIRONMENT.validate_successor_upgrade_cohort(
             self.factory, self.product, controller, "relay", source,
             base, manifest,
         )
         authorization.write_text(
-            authorization.read_text().replace(checkpoint, base),
+            authorization.read_text().replace(checkpoint_parent, base),
             encoding="utf-8",
         )
         run(self.product, "git", "add", str(authorization))
@@ -5138,8 +5151,14 @@ class QualificationEnvironmentTest(unittest.TestCase):
         run(self.product, "git", "commit", "-qm", "partial route migration")
         partial_checkpoint = run(self.product, "git", "rev-parse", "HEAD")
         run(self.product, "git", "switch", "-q", "main")
-        partial_protected = authorize(partial_checkpoint)
-        write_source_passport(partial_protected)
+        partial_route_sha256 = hashlib.sha256(
+            run(
+                self.product, "git", "show",
+                f"{partial_checkpoint}:factory/route-plans/{ticket}.json",
+            ).encode() + b"\n",
+        ).hexdigest()
+        forward_partial_protected = authorize(partial_checkpoint)
+        write_source_passport(forward_partial_protected, checkpoint)
 
         calls: list[tuple[str, str]] = []
 
@@ -5158,8 +5177,43 @@ class QualificationEnvironmentTest(unittest.TestCase):
                 base, manifest,
             )
         self.assertEqual(calls, [
+            (base, source), (forward_partial_protected, candidate),
+        ])
+        with mock.patch.object(
+            ENVIRONMENT, "verify_inflight_migration", return_value="exact",
+        ), self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "successor qualification requires every selected ticket",
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", source,
+                base, manifest,
+            )
+
+        partial_protected = authorize(checkpoint)
+        write_source_passport(
+            partial_protected, partial_checkpoint, partial_route_sha256,
+        )
+        calls.clear()
+        with mock.patch.object(
+            ENVIRONMENT, "verify_inflight_migration", side_effect=verify_partial,
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", source,
+                base, manifest,
+            )
+        self.assertEqual(calls, [
             (base, source), (partial_protected, candidate),
         ])
+        calls.clear()
+        with mock.patch.object(
+            ENVIRONMENT, "verify_inflight_migration", return_value="exact",
+        ) as exact_verify:
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", source,
+                base, manifest,
+            )
+        self.assertEqual(exact_verify.call_count, 2)
         calls.clear()
         with mock.patch.object(
             ENVIRONMENT, "verify_inflight_migration", side_effect=verify_partial,
@@ -5171,6 +5225,33 @@ class QualificationEnvironmentTest(unittest.TestCase):
         self.assertEqual(calls, [
             (partial_protected, source), (partial_protected, candidate),
         ])
+
+        run(self.product, "git", "switch", "-qc", "checkpoint-current", checkpoint)
+        (self.product / "current-side.txt").write_text("current\n")
+        run(self.product, "git", "add", "current-side.txt")
+        run(self.product, "git", "commit", "-qm", "divergent current")
+        divergent_current = run(self.product, "git", "rev-parse", "HEAD")
+        run(self.product, "git", "switch", "-qc", "checkpoint-auth", checkpoint)
+        (self.product / "auth-side.txt").write_text("auth\n")
+        run(self.product, "git", "add", "auth-side.txt")
+        run(self.product, "git", "commit", "-qm", "divergent authorization")
+        divergent_authorization = run(self.product, "git", "rev-parse", "HEAD")
+        run(self.product, "git", "switch", "-q", "main")
+        divergent_protected = authorize(divergent_authorization)
+        write_source_passport(divergent_protected, divergent_current)
+        with self.assertRaisesRegex(
+            ENVIRONMENT.EnvironmentError,
+            "successor qualification requires every selected ticket",
+        ):
+            ENVIRONMENT.validate_successor_upgrade_cohort(
+                self.factory, self.product, controller, "relay", source,
+                base, manifest,
+            )
+
+        restored_protected = authorize(checkpoint)
+        write_source_passport(
+            restored_protected, partial_checkpoint, partial_route_sha256,
+        )
 
         value = json.loads(authorization.read_text(encoding="utf-8"))
         value["schema"] = (
