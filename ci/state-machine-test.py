@@ -1137,6 +1137,45 @@ class StateMachineTest(unittest.TestCase):
         transition.assert_not_called()
         self.assertEqual(result["stage"], "RUN spec-linter")
 
+        completed.append({"role": "spec-linter"})
+        with (
+            mock.patch.object(STATE, "current_state", return_value="Building"),
+            mock.patch.object(
+                STATE, "contract_repair_stage", return_value=(None, False)
+            ),
+            mock.patch.object(
+                STATE, "authenticated_role_evidence",
+                return_value=({}, completed),
+            ),
+            mock.patch.object(STATE, "resolve", return_value="RUN planner"),
+            mock.patch.object(STATE, "transition") as transition,
+            mock.patch.object(STATE, "migrate_passport"),
+            mock.patch.object(
+                STATE, "issue",
+                side_effect=lambda _args, _stage, loop=None: {
+                    "loop": loop, "receipt_sha256": receipt,
+                },
+            ),
+        ):
+            result = STATE.next_transition(self.args)
+
+        transition.assert_not_called()
+        self.assertEqual(result["stage"], "RUN planner")
+        self.assertEqual(result["loop"], {
+            "attempt": 1, "capped": False,
+            "kind": "planner-spec-linter", "limit": 3,
+        })
+        with mock.patch.object(
+            STATE, "authenticated_role_evidence",
+            return_value=({}, completed),
+        ):
+            self.assertEqual(
+                STATE.verified_preflight_stage(self.args, {
+                    "stage": result["stage"], "loop": result["loop"],
+                }),
+                "CATCHUP planner",
+            )
+
         with mock.patch.object(
             STATE, "authenticated_role_evidence",
             return_value=({}, completed + [{"role": "builder"}]),

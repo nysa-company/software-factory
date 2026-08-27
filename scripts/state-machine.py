@@ -3366,6 +3366,17 @@ def govern_loop(
                 "ESCALATE planner-spec-linter loop cap reached;"
             )
         )
+    elif stage == "RUN planner" and reviewer_repair_catchup(args, stage):
+        attempt = sum(
+            bool(re.fullmatch(
+                r"\s*SPEC-LINT:\s*FAIL(?:\s+—\s+.*)?\s*", line,
+                re.IGNORECASE,
+            ))
+            for line in text.splitlines()
+        )
+        if attempt:
+            kind = "planner-spec-linter"
+            cap_stage = True
     elif repair_override:
         attempt = contract_repair_attempt(args)
         if attempt:
